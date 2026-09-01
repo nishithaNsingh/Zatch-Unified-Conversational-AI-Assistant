@@ -82,6 +82,11 @@ services:
         sync: false
       - key: AZURE_OPENAI_DEPLOYMENT
         sync: false
+      # Without this embeddings_configured() returns False and
+      # find_similar_products goes dark - the vector search stays silent
+      # rather than wrong, but "show me something like this" stops working.
+      - key: AZURE_EMBEDDING_DEPLOYMENT
+        sync: false
       # Carried anyway: they cost nothing while zatch is configured (the
       # filter drops them), and they become the fallback the moment this
       # is pointed at zatch_demo.
