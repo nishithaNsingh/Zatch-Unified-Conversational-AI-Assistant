@@ -51,12 +51,14 @@ WHAT IT DOES NOT DO:
 
 import asyncio
 import re
+import secrets
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
+from app.config.settings import get_settings
 from app.db.connection import get_database
 from app.security.auth import create_test_token
 
@@ -394,6 +396,12 @@ PAGE = r"""
       <p class="lede" id="gateHint">Pick an account. A signed access token is generated for
          that exact user behind the scenes &mdash; the assistant then answers only
          from their own data.</p>
+      <div class="field" id="codeField" hidden>
+        <label for="code">ACCESS CODE</label>
+        <input id="code" type="password" placeholder="shared code" autocomplete="off"
+               onkeydown="if(event.key==='Enter')submitCode()">
+        <button class="primary" style="margin-top:9px" onclick="submitCode()">Unlock</button>
+      </div>
       <div id="scope" hidden></div>
       <div class="rows" id="accounts"></div>
       <div class="field" id="tokenField" hidden>
@@ -475,6 +483,41 @@ const SOURCES = {
 };
 
 const $ = (id) => document.getElementById(id);
+
+/* ---------- access code ----------
+   Only asked for when the SERVER says so - a 401 from /demo/accounts.
+   Unset server-side and this never appears, so laptop demos are
+   unchanged. Held in sessionStorage so a refresh does not re-ask, and
+   dropped when the tab closes; it is a shared door code, not a
+   credential worth persisting. */
+let accessCode = "";
+try { accessCode = sessionStorage.getItem("zatch.code") || ""; } catch (e) {}
+
+function codeHeaders() {
+  return accessCode ? {"X-Demo-Code": accessCode} : {};
+}
+
+function askForCode(message) {
+  $("codeField").hidden = false;
+  $("scope").hidden = true;
+  $("accounts").innerHTML = "";
+  $("altBtn").hidden = true;
+  $("gateHint").textContent = message
+    || "This demo is protected. Enter the access code you were given.";
+  $("code").focus();
+}
+
+async function submitCode() {
+  const value = $("code").value.trim();
+  if (!value) { $("gateErr").textContent = "Enter the code to continue."; return; }
+  accessCode = value;
+  try { sessionStorage.setItem("zatch.code", value); } catch (e) {}
+  $("gateErr").textContent = "";
+  $("codeField").hidden = true;
+  $("gateHint").textContent = "Checking…";
+  await loadScope();
+  await loadAccounts();
+}
 
 /* ---------- screens ---------- */
 // Three screens in one frame, and a back button that always means "up
@@ -711,7 +754,14 @@ document.addEventListener("DOMContentLoaded", () => {
 async function loadAccounts() {
   const box = $("accounts");
   try {
-    const r = await fetch("/demo/accounts");
+    const r = await fetch("/demo/accounts", {headers: codeHeaders()});
+    if (r.status === 401) {
+      // The server wants the shared code. Handled separately from every
+      // other failure because the remedy differs: this one the visitor
+      // can fix, by typing it.
+      askForCode(accessCode ? "That code was not accepted." : null);
+      return;
+    }
     if (!r.ok) {
       showTokenEntry();
       const body = await r.json().catch(() => ({}));
@@ -812,7 +862,7 @@ async function signIn(username, row) {
     // and never decides who anyone is.
     const r = await fetch("/demo/token", {
       method: "POST",
-      headers: {"Content-Type": "application/json"},
+      headers: Object.assign({"Content-Type": "application/json"}, codeHeaders()),
       body: JSON.stringify({username}),
     });
     const body = await r.json().catch(() => ({}));
@@ -1014,7 +1064,7 @@ async function send() {
 /* ---------- boot ---------- */
 async function loadScope() {
   try {
-    const s = await fetch("/demo/stats").then(r => r.ok ? r.json() : null);
+    const s = await fetch("/demo/stats", {headers: codeHeaders()}).then(r => r.ok ? r.json() : null);
     if (!s) return;
     if (Array.isArray(s.suggestions)) CATALOGUE_STARTERS = s.suggestions;
     const box = $("scope");
@@ -1095,13 +1145,39 @@ fetch("/health").then(r => r.json()).then(h => {
 """
 
 
+def _check_access(code: str | None) -> None:
+    """Refuses the demo data endpoints unless the shared code matches.
+
+    APPLIED TO THE DATA, NOT THE PAGE. /demo itself stays public and
+    serves an HTML shell that knows nothing - there is no point hiding
+    a page whose only content arrives from the three endpoints below.
+    Gating those means an unauthorised visitor sees a code box and
+    literally nothing else: no account names, no counts, no catalogue.
+
+    UNSET MEANS NO GATE. Local demos and development are unchanged; the
+    code only exists once the service is somewhere reachable.
+
+    compare_digest rather than ==, so a wrong code takes the same time
+    as a right one and cannot be guessed character by character.
+    """
+    expected = get_settings().demo_access_code
+    if not expected:
+        return
+    if not code or not secrets.compare_digest(code, expected):
+        raise HTTPException(
+            status_code=401,
+            detail="This demo needs an access code.",
+            headers={"X-Demo-Code-Required": "1"},
+        )
+
+
 @router.get("/demo", response_class=HTMLResponse, include_in_schema=False)
 async def demo_ui() -> str:
     return PAGE
 
 
 @router.get("/demo/accounts", include_in_schema=False)
-async def demo_accounts():
+async def demo_accounts(x_demo_code: str | None = Header(default=None)):
     """The accounts the picker offers, with enough context to choose.
 
     WHY A PICKER RATHER THAN A TEXT BOX. A demo that opens by asking a
@@ -1140,6 +1216,7 @@ async def demo_accounts():
     round trips against the real database. Grouping in Mongo returns the
     same answer in about 30ms.
     """
+    _check_access(x_demo_code)
     db = get_database()
 
     by_buyer = await db["orders"].aggregate([
@@ -1239,7 +1316,7 @@ async def _accounts_with_no_orders(db, buyer_ids: list) -> dict:
 
 
 @router.get("/demo/stats", include_in_schema=False)
-async def demo_stats():
+async def demo_stats(x_demo_code: str | None = Header(default=None)):
     """What the assistant can actually see, counted.
 
     WHY IT IS ON THE OPENING SCREEN. The demo answers questions one at a
@@ -1258,6 +1335,7 @@ async def demo_stats():
     rather than one after another - the page waits for the slowest, not
     for the sum.
     """
+    _check_access(x_demo_code)
     db = get_database()
 
     async def count(collection, query=None):
@@ -1511,7 +1589,7 @@ class DemoSignIn(BaseModel):
 
 
 @router.post("/demo/token", include_in_schema=False)
-async def demo_token(request: DemoSignIn):
+async def demo_token(request: DemoSignIn, x_demo_code: str | None = Header(default=None)):
     """Mints a token for a named demo account.
 
     THIS IS AN AUTHENTICATION BYPASS, AND THAT IS THE POINT. It takes a
@@ -1536,6 +1614,7 @@ async def demo_token(request: DemoSignIn):
     is now load-bearing rather than tidy; main.py warns at startup when
     it is on against real data.
     """
+    _check_access(x_demo_code)
     db = get_database()
     name = request.username.strip()
     user = await db[USERS_COLLECTION].find_one(

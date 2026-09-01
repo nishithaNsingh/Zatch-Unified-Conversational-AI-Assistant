@@ -327,3 +327,101 @@ class TestDemoSurfaceIsRemovableAsAWhole:
         the assertion - reaching a database is somebody else's test."""
         application = self._app(monkeypatch, "zatch_demo", demo_ui_enabled=True)
         assert (await self._get(application, "/demo")).status_code == 200
+
+
+class TestDemoAccessCode:
+    """The door in front of a live demo on real data.
+
+    /demo/accounts lists real buyers and /demo/token signs in as any of
+    them with no password. Behind a URL that is a customer directory
+    with one-click impersonation, and the access code is what turns
+    "anyone who finds the link" into "anyone you told".
+
+    Hermetic: every assertion here is about the refusal, which happens
+    before any database call.
+    """
+
+    def _app(self, monkeypatch, code):
+        from app.api import main
+        from app.api.routes import demo_ui
+
+        settings = Settings(
+            mongodb_uri="mongodb://localhost/test",
+            mongodb_database="zatch",
+            llm_api_key="k",
+            jwt_secret="s" * 64,
+            demo_access_code=code,
+        )
+        monkeypatch.setattr(main, "get_settings", lambda: settings)
+        monkeypatch.setattr(demo_ui, "get_settings", lambda: settings)
+        return main.create_app()
+
+    async def _get(self, application, path, code=None):
+        transport = ASGITransport(app=application)
+        headers = {"X-Demo-Code": code} if code else {}
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as ac:
+            return await ac.get(path, headers=headers)
+
+    @pytest.mark.parametrize("path", ["/demo/accounts", "/demo/stats"])
+    async def test_no_code_is_refused(self, monkeypatch, path):
+        response = await self._get(self._app(monkeypatch, "s3cret"), path)
+        assert response.status_code == 401
+
+    @pytest.mark.parametrize("path", ["/demo/accounts", "/demo/stats"])
+    async def test_a_wrong_code_is_refused(self, monkeypatch, path):
+        response = await self._get(self._app(monkeypatch, "s3cret"), path, code="nope")
+        assert response.status_code == 401
+
+    async def test_the_refusal_names_no_customer(self, monkeypatch):
+        """A 401 that leaked a username would defeat the point of the
+        gate for the one field that matters most."""
+        response = await self._get(self._app(monkeypatch, "s3cret"), "/demo/accounts")
+        body = response.text.lower()
+        for leak in ("pavan", "orders", "hyderabad", "username"):
+            assert leak not in body
+
+    async def test_sign_in_is_gated_too(self, monkeypatch):
+        """The listing is the smaller hole. /demo/token is the one that
+        hands over an account."""
+        application = self._app(monkeypatch, "s3cret")
+        transport = ASGITransport(app=application)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as ac:
+            response = await ac.post("/demo/token", json={"username": "Pavan"})
+        assert response.status_code == 401
+
+    def test_no_code_configured_means_no_gate(self, monkeypatch):
+        """Laptop demos and local development must be unchanged - a gate
+        you have to configure before you can work is a gate people
+        disable permanently.
+
+        Asserted against the guard rather than the endpoint: with no gate
+        the request carries on to the database, which a hermetic test has
+        no connection to. What matters here is only that the check lets
+        it through.
+        """
+        from app.api.routes import demo_ui
+
+        settings = Settings(
+            mongodb_uri="mongodb://localhost/test",
+            mongodb_database="zatch",
+            llm_api_key="k",
+            jwt_secret="s" * 64,
+            demo_access_code=None,
+        )
+        monkeypatch.setattr(demo_ui, "get_settings", lambda: settings)
+        demo_ui._check_access(None)      # must not raise
+
+    def test_the_comparison_is_constant_time(self, monkeypatch):
+        """compare_digest, not ==, so a wrong code cannot be guessed one
+        character at a time from how long the refusal takes."""
+        import inspect
+
+        from app.api.routes import demo_ui
+
+        source = inspect.getsource(demo_ui._check_access)
+        assert "compare_digest" in source
+        assert "== expected" not in source

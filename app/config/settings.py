@@ -120,6 +120,30 @@ class Settings(BaseSettings):
                     "kept so switching MONGODB_URI does not lose it.",
     )
 
+    # OPTIONAL. A shared code the demo surface demands before it shows
+    # anything.
+    #
+    # WHY IT EXISTS. /demo/accounts lists real buyers and /demo/token
+    # signs in as any of them with no password. On the machine running
+    # the demo that grants nothing - whoever opens it already has .env.
+    # Behind a URL it is a customer directory with one-click
+    # impersonation, which is the single thing standing between a
+    # shareable link and a privacy incident.
+    #
+    # UNSET = NO GATE, so local development and laptop demos are
+    # unchanged. Set it for anything reachable, and hand the code to
+    # whoever should get in alongside the link.
+    #
+    # Not a password and not per-user: one shared secret, compared in
+    # constant time, that turns "anyone who finds the URL" into "anyone
+    # you told". That is the whole claim - it does not make the data
+    # less real, and a leaked code is a leaked door.
+    demo_access_code: str | None = Field(
+        default=None,
+        description="Shared code required by /demo before it shows accounts. "
+                    "Unset = no gate (local use). Set it for any reachable URL.",
+    )
+
     # OPTIONAL. Whether to serve the demo chat page at /demo.
     #
     # DEFAULT ON, so the demo and local development need no extra
