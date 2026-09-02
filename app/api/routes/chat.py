@@ -59,9 +59,17 @@ async def chat(request: ChatRequest, user_id: str = Depends(rate_limited_user_id
     # scopes the SESSION as well as the data. session_id alone is
     # client-supplied and guessable; see session_store's OWNERSHIP note.
     history = await session_store.get_session(user_id, request.session_id)
-    reply, messages = await run_conversation(user_id, request.message, history=history)
+    # The mobile app calls THIS endpoint, not the streaming one, so the
+    # product rows have to arrive in the response body rather than only
+    # as an SSE event.
+    products: list = []
+    reply, messages = await run_conversation(
+        user_id, request.message, history=history, products_out=products
+    )
     await session_store.save_session(user_id, request.session_id, messages)
-    return ChatResponse(reply=reply, session_id=request.session_id)
+    return ChatResponse(
+        reply=reply, session_id=request.session_id, products=products
+    )
 
 
 def _frame(event: dict) -> str:
@@ -78,10 +86,16 @@ async def chat_stream(
     """The same conversation, delivered as it happens.
 
     Events, in the order a client sees them:
-      status  {"tool": "...", "label": "Looking up your orders"}
-      token   {"text": "..."} - fragments of the answer
-      done    {"reply": "...", "session_id": "..."}
-      error   {"message": "..."} - a sentence, never a stack trace
+      status    {"tool": "...", "label": "Looking up your orders"}
+      token     {"text": "..."} - fragments of the answer
+      products  {"products": [{"product_id": "...", "name": "...", ...}]}
+      done      {"reply": "...", "session_id": "..."}
+      error     {"message": "..."} - a sentence, never a stack trace
+
+    products ARRIVES BEFORE done, and at most once. It is sent only when
+    the reply is a real answer - never under one of the fallbacks, where
+    rows to tap would contradict the apology above them. A client that
+    ignores the event renders exactly what it rendered before.
 
     done CARRIES THE WHOLE REPLY, not just a terminator. A client can
     render the tokens as they arrive and then replace what it drew with

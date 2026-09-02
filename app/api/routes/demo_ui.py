@@ -336,6 +336,32 @@ PAGE = r"""
   }
   .meta .copy:hover { color:var(--text); background:var(--surface); }
 
+  /* Product rows. Tapping expands in place rather than navigating:
+     zatch.shop has no product pages, so a link would go nowhere. In the
+     app these open the product screen from product_id. */
+  .cards { align-self:flex-start; display:flex; flex-direction:column; gap:6px;
+           max-width:85%; padding:2px 0; }
+  .card { text-align:left; font:inherit; font-size:13.5px; color:var(--text);
+          background:var(--surface); border:1px solid var(--line);
+          border-radius:12px; padding:9px 12px; cursor:pointer;
+          animation:rise .22s ease-out; }
+  .card:hover { border-color:var(--accent-dim); }
+  .card .row { display:flex; gap:10px; align-items:center; }
+  .card .thumb { width:46px; height:46px; flex:none; border-radius:8px;
+                 object-fit:cover; background:var(--surface-2);
+                 border:1px solid var(--line-soft); }
+  .card .body { min-width:0; }
+  .card .nm { font-weight:600; overflow-wrap:anywhere; }
+  .card .pr { display:flex; align-items:baseline; gap:7px; margin-top:3px;
+              color:var(--muted); font-size:12.5px; }
+  .card .pr b { color:var(--text); font-size:13.5px; }
+  .card .pr s { color:var(--faint); }
+  .card .pr .off { color:var(--accent); font-size:11.5px; }
+  .card .detail { display:none; margin-top:6px; padding-top:6px;
+                  border-top:1px solid var(--line); color:var(--faint);
+                  font-size:11.5px; }
+  .card.open .detail { display:block; }
+
   .jump {
     position:absolute; right:16px; bottom:78px; z-index:3;
     background:var(--surface-2); border:1px solid var(--line); color:var(--text);
@@ -665,7 +691,11 @@ function renderChat() {
   thread.messages.forEach(m => {
     if (m.role === "user") add(m.text, "msg user");
     else if (m.role === "error") add(m.text, "msg err");
-    else { add(m.text, "msg bot"); if (m.meta) metaLine(m.meta.timing, m.meta.checked); }
+    else {
+      add(m.text, "msg bot");
+      if (m.products) productCards(m.products);
+      if (m.meta) metaLine(m.meta.timing, m.meta.checked);
+    }
   });
   stick(true);
 }
@@ -704,6 +734,84 @@ function add(text, cls) {
   $("log").appendChild(d);
   stick(true);
   return d;
+}
+
+function rupees(v) {
+  if (v === null || v === undefined) return "—";
+  return "₹" + Number(v).toLocaleString("en-IN");
+}
+
+/* THE PRODUCTS THE ANSWER DREW ON, drawn by us rather than written by
+   the model. Every field here came out of a tool result and travelled
+   beside the prose - the model never saw a URL and never composed one,
+   so a card cannot point at a product the answer was not about.
+   textContent throughout, same as add(): these names are seller-written. */
+function productCards(products) {
+  if (!products || !products.length) return null;
+  const wrap = document.createElement("div");
+  wrap.className = "cards";
+
+  products.forEach(p => {
+    const card = document.createElement("button");
+    card.className = "card";
+    card.type = "button";
+
+    const row = document.createElement("div");
+    row.className = "row";
+
+    // Four of the 143 products carry no image, and a CDN link can always
+    // fail. Either way the row keeps its name and price rather than
+    // holding a broken-image icon.
+    if (p.image) {
+      const img = document.createElement("img");
+      img.className = "thumb";
+      img.src = p.image;
+      img.alt = "";
+      img.loading = "lazy";
+      img.onerror = () => img.remove();
+      row.appendChild(img);
+    }
+
+    const body = document.createElement("div");
+    body.className = "body";
+
+    const nm = document.createElement("div");
+    nm.className = "nm";
+    nm.textContent = p.name || "Unnamed product";
+
+    const pr = document.createElement("div");
+    pr.className = "pr";
+    const cut = p.discountedPrice !== null && p.discountedPrice !== undefined
+             && p.price !== null && p.price !== undefined
+             && p.discountedPrice < p.price;
+    const now = document.createElement("b");
+    const effective = (p.discountedPrice === null || p.discountedPrice === undefined)
+      ? p.price : p.discountedPrice;
+    now.textContent = rupees(effective);
+    pr.appendChild(now);
+    if (cut) {
+      const was = document.createElement("s");
+      was.textContent = rupees(p.price);
+      const off = document.createElement("span");
+      off.className = "off";
+      off.textContent = "-" + Math.round((1 - p.discountedPrice / p.price) * 100) + "%";
+      pr.append(was, off);
+    }
+
+    const detail = document.createElement("div");
+    detail.className = "detail";
+    detail.textContent = "Opens this product in the Zatch app.";
+
+    body.append(nm, pr);
+    row.appendChild(body);
+    card.append(row, detail);
+    card.onclick = () => card.classList.toggle("open");
+    wrap.appendChild(card);
+  });
+
+  $("log").appendChild(wrap);
+  stick();
+  return wrap;
 }
 
 function metaLine(timing, checked, copyText) {
@@ -943,6 +1051,7 @@ async function send() {
   wait.innerHTML = "<i></i><i></i><i></i>";
   let status = null, bubble = null, firstToken = null;
   const checked = [];
+  let products = [];
   const t0 = performance.now();
 
   function showStatus(label) {
@@ -973,6 +1082,9 @@ async function send() {
     if (!bubble) bubble = add("", "msg bot");
     if (reply) bubble.textContent = reply;
     bubble.classList.remove("writing");
+    // Between the answer and its meta line, so the "checked" footnote
+    // still reads as the last word on the turn.
+    productCards(products);
 
     const ms = performance.now() - t0;
     const timing = firstToken
@@ -980,7 +1092,7 @@ async function send() {
       : (ms / 1000).toFixed(1) + "s";
     const src = checked.join(" · ");
     metaLine(timing, src, bubble.textContent);
-    thread.messages.push({role: "bot", text: bubble.textContent, meta: {timing, checked: src}});
+    thread.messages.push({role: "bot", text: bubble.textContent, products, meta: {timing, checked: src}});
     thread.updatedAt = Date.now();
     upsertThread();
   }
@@ -1034,6 +1146,7 @@ async function send() {
           showStatus(payload.label);
         }
         else if (name === "token") appendToken(payload.text);
+        else if (name === "products") products = payload.products || [];
         else if (name === "done")  finish(payload.reply);
         else if (name === "error") { fail(payload.message); return; }
       }

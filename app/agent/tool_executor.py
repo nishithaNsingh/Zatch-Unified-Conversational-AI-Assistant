@@ -54,7 +54,9 @@ import structlog
 from bson import ObjectId
 
 from app.agent.tools import TOOL_REGISTRY
+from app.config.settings import get_settings
 from app.repos import orders_repo, products_repo
+from app.repos.base import to_object_id
 
 logger = structlog.get_logger()
 
@@ -466,7 +468,140 @@ _SUMMARISERS = {
 }
 
 
-async def execute_tool(tool_name: str, arguments: dict, user_id: str) -> str:
+# THE APP'S VIEW OF THE SAME RESULT, ALONGSIDE THE MODEL'S.
+#
+# The client asked for products the user can tap. The obvious route is to
+# let the model write the link into its sentence, and it is the wrong
+# one: the model would be COMPOSING the reference, which means it can
+# eventually attach the right id to the wrong name, and a card that opens
+# the wrong product is worse than no card at all.
+#
+# So the ids travel beside the prose instead of inside it. The model
+# never sees a URL and never writes one; the client is handed exact
+# (product_id, name, price) rows lifted straight from the tool result and
+# builds its own navigation. The system prompt's "never show internal
+# IDs" rule stays exactly as it is, because the model still never shows
+# one.
+#
+# Keyed by tool name rather than sniffed from the result's shape, for the
+# same reason _TRIMMERS is: the shapes are known here, and a heuristic
+# would eventually pick up an order line or a cart row and offer to open
+# a product page for something that is not a product.
+#
+# None means the trimmed result IS the list; a string names the key the
+# list sits under.
+_PRODUCT_LIST_SOURCES = {
+    "search_products": None,
+    "search_products_by_name": None,
+    "search_products_semantically": None,
+    "find_similar_products": None,
+    "get_trending_products": None,
+    "get_recommendations": None,
+    "get_session_products": "products",
+    "get_tagged_products": "products",
+    "get_saved_items": "savedProducts",
+}
+
+
+def _product_cards(tool_name: str, result) -> list[dict]:
+    """The products this tool result surfaced, in the shape a client
+    needs to draw a tappable card.
+
+    NO URL IS BUILT HERE, deliberately. zatch.shop is a marketing site
+    with no product pages - /product/<id> renders its router's 404 - so
+    there is nowhere on the web for a link to point. The app routes on
+    product_id through its own navigation stack, and a web link can be
+    added later without touching this function, by whoever owns the
+    route that would serve it.
+
+    No images either: the trimmers drop them on purpose, and fetching
+    thumbnails would need a second query. A follow-up, not a blocker -
+    the allowlist already permits the field.
+    """
+    if tool_name == "get_product_detail":
+        # The odd one out - a single product, and _trim_product_detail
+        # names its id "productId" where the list trimmer says
+        # "product_id". Normalised here rather than changing either,
+        # since both shapes are what their own readers already expect.
+        if isinstance(result, dict) and result.get("productId"):
+            return [{
+                "product_id": str(result["productId"]),
+                "name": result.get("name"),
+                "price": result.get("price"),
+                "discountedPrice": result.get("discountedPrice"),
+            }]
+        return []
+
+    if tool_name not in _PRODUCT_LIST_SOURCES:
+        return []
+
+    key = _PRODUCT_LIST_SOURCES[tool_name]
+    items = result if key is None else (result or {}).get(key)
+    if not isinstance(items, list):
+        return []
+
+    cards = []
+    for item in items:
+        # A product whose id did not survive cannot be opened, so it is
+        # not offered as something to tap.
+        if not isinstance(item, dict) or not item.get("product_id"):
+            continue
+        cards.append({
+            "product_id": item["product_id"],
+            "name": item.get("name"),
+            "price": item.get("price"),
+            "discountedPrice": item.get("discountedPrice"),
+        })
+    return cards
+
+
+async def attach_thumbnails(cards: list[dict]) -> list[dict]:
+    """One batched query for the images the trimmers threw away.
+
+    THE TRIMMERS ARE RIGHT TO DROP THEM. A model describes a product in
+    words and has no use for a CDN URL, so carrying image arrays through
+    the whole pipeline would spend tokens on something it ignores - that
+    is the 51k-token lesson this module was built around.
+
+    A card is the opposite case: a row with no picture reads as
+    unfinished beside a real product screen. So the image is fetched
+    once, for the handful of cards actually being sent, at the end of the
+    turn rather than on every tool call - one indexed $in over at most
+    LLM_LIST_LIMIT_CAP ids.
+
+    A missing thumbnail is never a reason to lose the card: every failure
+    here degrades to no image rather than no products.
+    """
+    if not cards:
+        return cards
+
+    ids = [oid for oid in (to_object_id(c["product_id"]) for c in cards) if oid is not None]
+    if not ids:
+        return cards
+
+    try:
+        docs = await products_repo.get_products_by_ids(ids)
+    except Exception as exc:
+        logger.warning("product_thumbnail_lookup_failed", error=str(exc))
+        return cards
+
+    # Empty until the CDN can actually resize - see product_image_query.
+    suffix = get_settings().product_image_query
+
+    first_image = {}
+    for doc in docs:
+        images = doc.get("images") or []
+        if images and isinstance(images[0], dict) and images[0].get("url"):
+            first_image[str(doc.get("_id"))] = images[0]["url"] + suffix
+
+    for card in cards:
+        card["image"] = first_image.get(card["product_id"])
+    return cards
+
+
+async def execute_tool(
+    tool_name: str, arguments: dict, user_id: str, collector: list | None = None
+) -> str:
     if tool_name not in TOOL_REGISTRY:
         logger.warning("unknown_tool_requested", tool_name=tool_name)
         return json.dumps({"error": f"Unknown tool: {tool_name}"})
@@ -509,5 +644,13 @@ async def execute_tool(tool_name: str, arguments: dict, user_id: str) -> str:
             # A missing total is worse than no answer only if it lies -
             # so drop the summary and return the list unchanged.
             logger.error("tool_result_summary_failed", tool_name=tool_name, error=str(exc))
+
+    # Products the app can open, collected beside the string the model
+    # reads. A no-op when nobody passed a collector, so /chat and the
+    # tests take exactly the path they took before.
+    if collector is not None:
+        cards = _product_cards(tool_name, result)
+        if cards:
+            collector.append(cards)
 
     return json.dumps(to_json_safe(result), default=str)

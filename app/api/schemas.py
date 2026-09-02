@@ -17,6 +17,25 @@ class ChatRequest(BaseModel):
     session_id: str = Field(..., min_length=1, max_length=200)
 
 
+class ProductCard(BaseModel):
+    """One product the answer drew on, for the client to render as a
+    tappable row. Carries no URL: the app navigates on product_id
+    through its own stack, and zatch.shop has no product pages to link
+    to. See tool_executor._product_cards for why the id travels beside
+    the prose rather than inside it."""
+
+    product_id: str
+    name: str | None = None
+    price: float | None = None
+    discountedPrice: float | None = None
+    # First catalogue image, or None for the four products that have
+    # none. A card renders without it rather than not at all.
+    image: str | None = None
+
+
 class ChatResponse(BaseModel):
     reply: str
     session_id: str
+    # Defaulted, so a client written against the old shape keeps
+    # deserialising this response unchanged.
+    products: list[ProductCard] = Field(default_factory=list)

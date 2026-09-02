@@ -51,6 +51,7 @@ MECHANISM:
     from the tool-calling iteration count.
 """
 
+import asyncio
 import json
 
 import structlog
@@ -63,7 +64,7 @@ from app.agent.llm_client import (
     get_providers,
     stream,
 )
-from app.agent.tool_executor import execute_tool
+from app.agent.tool_executor import TOOL_FAILED, attach_thumbnails, execute_tool
 from app.agent.tools import TOOLS
 from app.repos import products_repo
 
@@ -82,6 +83,11 @@ MAX_RETRIES_ON_MALFORMED_OUTPUT = 2
 FALLBACK_GENERIC = "I'm having a little trouble with that request right now - could you try rephrasing it?"
 FALLBACK_BUSY = "I'm handling a lot of requests right now - give me a few seconds and try that again?"
 FALLBACK_UNAVAILABLE = "I can't reach my assistant service at the moment - please try again shortly."
+
+# Every reply that is an apology rather than an answer. Product cards are
+# withheld for these: offering things to tap under "I can't reach my
+# assistant service" contradicts the sentence above them.
+FALLBACKS = frozenset({FALLBACK_GENERIC, FALLBACK_BUSY, FALLBACK_UNAVAILABLE})
 
 
 async def build_system_prompt() -> str:
@@ -155,6 +161,8 @@ ORDERS: for "my order" with no specific order named, call get_order_history firs
 READ-ONLY: you can look things up, and nothing else. Never offer to place an order or a bargain, add to cart, apply a coupon, cancel, change, track-and-notify, or watch anything - you cannot do any of it. Report what is true, then point to the relevant screen in the app. Do not end a reply by offering an action you cannot perform.
 
 SEARCH: if the user NAMES a product, call search_products_by_name - never guess filters for it. Use search_products only when the user gives filters: category must be exactly one of {real_categories['categories']}. subCategory exactly one of {real_categories['subCategories']}. Case does not matter, but never use a value outside these lists.
+
+BROWSING: when the user wants something to buy but says nothing about what ("what should I buy"), call get_recommendations and show what comes back, then offer to narrow - do not open with questions, it needs no arguments and always returns something. This is the LAST resort: a described need ("something warm") is search_products_semantically, and asking what is trending or popular is get_trending_products.
 
 BARGAINING: the bargain tools need a product_id, so resolve the product by name first if that is all you have.
 
@@ -483,6 +491,7 @@ async def run_conversation(
     user_message: str,
     history: list | None = None,
     on_event=None,
+    products_out: list | None = None,
 ) -> tuple[str, list]:
     """The conversation. Identical for both endpoints.
 
@@ -492,9 +501,17 @@ async def run_conversation(
     non-streaming endpoint takes that the streaming one does not. Pass
     nothing and every _emit below is a no-op.
 
-    Two kinds of event come out of it:
-      status  a lookup is starting, named in the user's words
-      token   a fragment of the answer, as the model writes it
+    Three kinds of event come out of it:
+      status    a lookup is starting, named in the user's words
+      token     a fragment of the answer, as the model writes it
+      products  the products the answer drew on, as tappable rows
+
+    products_out IS FOR THE NON-STREAMING ENDPOINT, and exists because
+    the mobile app is the client that actually wants this: it calls
+    /chat, not /chat/stream, so an SSE event alone would deliver the
+    feature to the demo page and nobody else. An out-parameter rather
+    than a third return value, so every existing caller - both routes,
+    the rehearsal script, four tests - keeps unpacking a pair.
 
     The status events matter more than the tokens here. An answer cannot
     begin until the lookups finish, so the first several seconds produce
@@ -509,6 +526,33 @@ async def run_conversation(
         if on_event is not None
         else None
     )
+
+    # One batch per tool call that surfaced products, in call order.
+    batches: list[list[dict]] = []
+
+    async def _deliver_products(reply: str) -> None:
+        """The LAST batch, not every product seen this turn.
+
+        A single question routinely fans out: "tell me about the blue
+        kurta" searches by name and THEN opens the detail, and pooling
+        both would put the eight search hits under an answer about one
+        product. The last product-returning call is the one the answer
+        was actually written from - search then detail ends on the
+        detail, search then find-similar ends on the similars.
+
+        The exact version of this is to attach only what the reply
+        names, which is the grounding-verifier work; this is the
+        heuristic that holds until that lands.
+        """
+        if reply in FALLBACKS:
+            return
+        batch = batches[-1] if batches else []
+        if not batch:
+            return
+        batch = await attach_thumbnails(batch)
+        if products_out is not None:
+            products_out.extend(batch)
+        _emit(on_event, type="products", products=batch)
 
     for _ in range(MAX_TOOL_ITERATIONS):
         # Reached only once EVERY provider has failed - so these
@@ -543,6 +587,7 @@ async def run_conversation(
                 continue
 
             messages.append({"role": "assistant", "content": completion.content})
+            await _deliver_products(completion.content)
             return completion.content, messages
 
         messages.append({
@@ -554,6 +599,26 @@ async def run_conversation(
             "tool_calls": [tc.to_message_part() for tc in completion.tool_calls],
         })
 
+        # THE TOOL CALLS OF ONE ROUND, RUN TOGETHER RATHER THAN IN TURN.
+        #
+        # The model routinely asks for several at once - "is the blue
+        # kurta in stock and can I bargain on it" is a stock check and an
+        # eligibility check that share nothing - and running them in
+        # sequence added their latencies for no reason at all. Each is an
+        # independent read against Mongo.
+        #
+        # ORDER SURVIVES THIS, in two places that both matter:
+        #
+        #   The tool MESSAGES are appended in the order the model asked,
+        #   because a provider given tool replies that do not line up
+        #   with its own calls rejects the next request.
+        #
+        #   Each call collects its products into its OWN list, merged
+        #   afterwards in call order. A shared list would fill in
+        #   COMPLETION order, and _deliver_products takes the last batch
+        #   - which would silently become whichever query happened to
+        #   finish last rather than the one the answer was written from.
+        planned = []
         for tc in completion.tool_calls:
             try:
                 arguments = json.loads(tc.arguments)
@@ -571,23 +636,59 @@ async def run_conversation(
                     tool_name=tc.name,
                     raw_arguments=tc.arguments,
                 )
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": json.dumps(
-                        {"error": "Arguments were not a valid JSON object. Try that call again."}
-                    ),
-                })
+                planned.append((tc, None))
                 continue
+            planned.append((tc, arguments))
 
-            _emit(
-                on_event,
-                type="status",
-                tool=tc.name,
-                label=_TOOL_STATUS.get(tc.name, DEFAULT_TOOL_STATUS),
-            )
-            result = await execute_tool(tc.name, arguments, user_id)
-            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+        # Statuses go out in call order, before anything is awaited, so
+        # the "checked" footnote still names every source even though the
+        # lookups themselves now overlap.
+        for tc, arguments in planned:
+            if arguments is not None:
+                _emit(
+                    on_event,
+                    type="status",
+                    tool=tc.name,
+                    label=_TOOL_STATUS.get(tc.name, DEFAULT_TOOL_STATUS),
+                )
+
+        runnable = [(i, tc, args) for i, (tc, args) in enumerate(planned) if args is not None]
+        collectors = {i: [] for i, _, _ in runnable}
+        results = await asyncio.gather(
+            *(
+                execute_tool(tc.name, args, user_id, collector=collectors[i])
+                for i, tc, args in runnable
+            ),
+            # execute_tool already answers its own failures in JSON, so
+            # reaching here means something escaped it. Even then every
+            # tool_call id has to come back with SOMETHING, so the
+            # exception becomes the same failure the model already knows
+            # how to read instead of tearing down the whole turn.
+            return_exceptions=True,
+        )
+
+        answered = {}
+        for (i, tc, _), result in zip(runnable, results):
+            if isinstance(result, BaseException):
+                logger.error(
+                    "tool_execution_escaped", tool_name=tc.name, error=str(result)
+                )
+                result = json.dumps(TOOL_FAILED)
+            answered[i] = result
+
+        for i, (tc, arguments) in enumerate(planned):
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": answered[i] if arguments is not None else json.dumps(
+                    {"error": "Arguments were not a valid JSON object. Try that call again."}
+                ),
+            })
+
+        for i, _, _ in runnable:
+            batches.extend(collectors[i])
 
     logger.warning("max_tool_iterations_exceeded", user_id=user_id)
-    return await _synthesize_final_answer(messages, user_id, on_text=on_text)
+    reply, messages = await _synthesize_final_answer(messages, user_id, on_text=on_text)
+    await _deliver_products(reply)
+    return reply, messages

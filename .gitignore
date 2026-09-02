@@ -30,3 +30,10 @@ docs/staging-collections-and-fields.pdf
 # the re-embed migration. Derived data, ~1.2MB, and the model that made
 # it is unidentified so it cannot be regenerated - keep it, do not commit it.
 product_embeddings.backup.json
+
+# Eval results. The JSON holds whole assistant replies against the live
+# `zatch` database - real order ids, real customer purchases, real
+# prices - so it is derived production data and cannot be committed for
+# the same reason the schema dumps above cannot. Keep runs locally and
+# compare them locally; record the SCORE in the PR, not the transcript.
+/evals/

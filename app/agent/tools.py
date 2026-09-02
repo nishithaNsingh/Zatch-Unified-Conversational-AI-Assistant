@@ -269,7 +269,17 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_recommendations",
-            "description": "Personalised picks for the current user, from their saved and liked history.",
+            # THE FALLBACK IS PART OF THE CONTRACT, so it belongs in the
+            # description. Measured: asked "What should I buy?" the model
+            # called nothing and replied with four narrowing questions -
+            # a fair reading of "from their saved and liked history",
+            # which sounds like it needs a history to work. The repo
+            # falls back to trending for a user with none, so there was
+            # always an answer to give; only the schema said otherwise.
+            "description": "Personalised picks for the current user. Takes no "
+                           "required arguments and always returns products - "
+                           "based on their saved and liked items, falling back "
+                           "to trending when they have none yet.",
             "parameters": {
                 "type": "object",
                 "properties": {"limit": {"type": "integer"}},

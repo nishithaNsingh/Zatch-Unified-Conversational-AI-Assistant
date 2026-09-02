@@ -163,6 +163,29 @@ class Settings(BaseSettings):
                     "deployments.",
     )
 
+    # WHAT TURNS A PRODUCT PHOTO INTO A THUMBNAIL, and why this is empty.
+    #
+    # Product cards show a 46px image. The catalogue's images are the
+    # full-resolution originals - a measured one is 901 KB - so eight
+    # cards is roughly 7 MB for a single answer, on a phone, in a market
+    # where mobile data is the cost that matters.
+    #
+    # Bunny's Optimizer would fix it at the CDN with ?width=96, but it is
+    # NOT currently enabled on the pull zone: ?width=96, ?quality=75 and
+    # ?class=thumb all return the identical 901,302 bytes. So there is
+    # nothing useful to append yet, and appending a parameter the CDN
+    # ignores would only look like it worked.
+    #
+    # Once the Optimizer is switched on, this becomes a config change
+    # rather than a code one - set it to "?width=96&quality=75" and every
+    # card gets light without redeploying anything.
+    product_image_query: str = Field(
+        default="",
+        description="Query string appended to product image URLs to request a "
+                    "CDN-resized thumbnail, e.g. '?width=96&quality=75'. Empty "
+                    "until Bunny Optimizer is enabled on the pull zone.",
+    )
+
     # OPTIONAL. Where state SHARED BETWEEN WORKERS lives - conversation
     # history and the /chat rate-limit counts both.
     #
