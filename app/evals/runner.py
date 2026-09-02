@@ -45,6 +45,7 @@ from app.agent.orchestrator import (
     run_conversation,
 )
 from app.evals.cases import CASES, Case, resolve
+from app.evals.judge import judge_products
 from app.repos import products_repo
 
 
@@ -64,6 +65,11 @@ class Result:
     forbidden_used: list = field(default_factory=list)
     hard_failures: list = field(default_factory=list)
     soft_findings: list = field(default_factory=list)
+    # Only populated when --judge ran. A judged run therefore applies a
+    # check an unjudged one does not, so the two are NOT comparable -
+    # compare judged against judged.
+    invented_products: list = field(default_factory=list)
+    judge_error: str = ""
 
     @property
     def passed(self) -> bool:
@@ -74,6 +80,7 @@ class Result:
             and self.tools_ok
             and not self.forbidden_used
             and not self.hard_failures
+            and not self.invented_products
         )
 
     @property
@@ -89,6 +96,8 @@ class Result:
             out.append("looked nowhere useful")
         out += [f"used forbidden {t}" for t in self.forbidden_used]
         out += self.hard_failures
+        out += [f"named a product no tool returned: {p!r}"
+                for p in self.invented_products]
         return out
 
 
@@ -107,7 +116,9 @@ async def pick_fixtures() -> str:
     return (docs[0].get("name") or "").strip() if docs else "kurta"
 
 
-async def run_case(case: Case, user_id: str, system_prompt: str) -> Result:
+async def run_case(
+    case: Case, user_id: str, system_prompt: str, use_judge: bool = False
+) -> Result:
     result = Result(case_id=case.id, question=case.question)
     tools: list = []
 
@@ -153,6 +164,18 @@ async def run_case(case: Case, user_id: str, system_prompt: str) -> Result:
     result.soft_findings = [
         f"amount {a} not found in any tool result" for a in report.unmatched_amounts
     ]
+    result.soft_findings += [
+        f"order ending {s} matches no order returned" for s in report.unmatched_order_suffixes
+    ]
+
+    # THE PART A REGEX CANNOT DO. Costs a second LLM call, so it is
+    # opt-in - but it is the only check covering the failure this
+    # project was built around, which was a product NAME.
+    if use_judge:
+        verdict = await judge_products(reply, messages)
+        result.invented_products = verdict.invented
+        result.judge_error = verdict.error
+
     return result
 
 
@@ -163,6 +186,7 @@ async def run(
     delay: float = 2.0,
     retry_delay: float = 20.0,
     checkpoint: str | None = None,
+    judge: bool = False,
 ) -> list[Result]:
     product = await pick_fixtures()
     cases = resolve(CASES, product)
@@ -178,14 +202,14 @@ async def run(
     results = []
     for index, case in enumerate(cases, 1):
         print(f"  [{index}/{len(cases)}] {case.id} ... ", end="", flush=True)
-        result = await run_case(case, user_id, system_prompt)
+        result = await run_case(case, user_id, system_prompt, use_judge=judge)
 
         if result.not_assessed:
             # One retry, after a pause long enough for a rate-limit
             # window to roll over or a dropped connection to re-open.
             print("provider down, retrying ... ", end="", flush=True)
             await asyncio.sleep(retry_delay)
-            result = await run_case(case, user_id, system_prompt)
+            result = await run_case(case, user_id, system_prompt, use_judge=judge)
 
         results.append(result)
         verdict = "SKIP" if result.not_assessed else ("PASS" if result.passed else "FAIL")
@@ -244,6 +268,11 @@ def report(results: list[Result], label: str) -> dict:
             print(f"  {r.case_id:20} {'; '.join(r.reasons)}")
             print(f"  {'':20} tools: {', '.join(r.tools_called) or '(none)'}")
 
+    stuck = [r for r in results if r.judge_error]
+    if stuck:
+        print(f"\n  JUDGE UNAVAILABLE on {len(stuck)} case(s): "
+              f"{stuck[0].judge_error}")
+
     soft = [(r.case_id, f) for r in results for f in r.soft_findings]
     if soft:
         print("\nTO REVIEW (amounts that may be derived rather than quoted)")
@@ -272,6 +301,7 @@ def compare(current: dict, previous: dict) -> None:
         return (
             not row["error"] and row["answered"] and row["tools_ok"]
             and not row["forbidden_used"] and not row["hard_failures"]
+            and not row.get("invented_products")
         )
 
     # Only cases assessed in BOTH runs can have moved. A provider drop is

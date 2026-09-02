@@ -354,3 +354,45 @@ class TestTheSuffixIsFoundByValueNotByWording:
         claims = grounding.attribute(reply, self.ORDERS)
         assert len(claims) == 1, "the id and its last four overlap"
         assert claims[0]["kind"] == "order_id"
+
+
+class TestTheNamesATooolActuallyReturned:
+    """The allowed set an LLM judge is constrained to. Everything that
+    gets in here is a name the assistant may legitimately say; anything
+    that wrongly gets in licenses a hallucination."""
+
+    def test_product_lists_contribute_their_names(self):
+        messages = exchange("search_products",
+                            [{"product_id": "a", "name": "Cotton Kurta"},
+                             {"product_id": "b", "name": "Silk Saree"}])
+        assert grounding.product_names(messages) == {"Cotton Kurta", "Silk Saree"}
+
+    def test_order_items_contribute_their_names(self):
+        messages = exchange("get_order_history", {"orders": [
+            {"orderId": "ORD1771057102499209",
+             "items": [{"name": "digital clock", "qty": 1}]},
+        ]})
+        assert grounding.product_names(messages) == {"digital clock"}
+
+    def test_bargains_use_their_own_spelling(self):
+        messages = exchange("get_bargain_status", {"productName": "Lenin shirts"})
+        assert grounding.product_names(messages) == {"Lenin shirts"}
+
+    def test_people_and_sessions_are_not_products(self):
+        """A username or a live-session title must not become a name the
+        assistant may present as something to buy."""
+        messages = (
+            exchange("get_followers_or_following",
+                     {"sample": [{"username": "rutuja", "businessName": "Zatch Co"}]}, "a")
+            + exchange("get_live_now", [{"session_id": "s", "title": "Friday Haul"}], "b")
+            + exchange("get_trending_bits", [{"bit_id": "b", "title": "Unboxing"}], "c")
+        )
+        assert grounding.product_names(messages) == set()
+
+    def test_blank_and_missing_names_are_skipped(self):
+        messages = exchange("search_products",
+                            [{"name": "  "}, {"name": None}, {"name": "Real One"}])
+        assert grounding.product_names(messages) == {"Real One"}
+
+    def test_nothing_looked_up_means_an_empty_set(self):
+        assert grounding.product_names([]) == set()

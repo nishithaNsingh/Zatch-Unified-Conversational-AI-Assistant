@@ -52,6 +52,12 @@ async def main() -> None:
     parser.add_argument("--delay", type=float, default=2.0,
                         help="seconds between cases, to stay under rate limits")
     parser.add_argument("--against", default="", help="a previous results file")
+    parser.add_argument(
+        "--judge", action="store_true",
+        help="also ask an LLM whether the answer named a product no tool "
+             "returned. Doubles the LLM calls, and applies a check an "
+             "unjudged run does not - compare judged runs to judged runs.",
+    )
     parser.add_argument("--out-dir", default="evals")
     args = parser.parse_args()
 
@@ -68,7 +74,7 @@ async def main() -> None:
         print(f"user {user_id}  ·  delay {args.delay}s\n")
         results = await runner.run(user_id, only=only or None,
                                    limit=args.limit, delay=args.delay,
-                                   checkpoint=checkpoint)
+                                   checkpoint=checkpoint, judge=args.judge)
     finally:
         await close_mongo_connection()
 

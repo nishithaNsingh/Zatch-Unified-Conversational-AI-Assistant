@@ -159,6 +159,47 @@ def observed(messages: list[dict]) -> tuple[set, set]:
     return strings, numbers
 
 
+# Keys under which a trimmed tool result carries a PRODUCT's name.
+# "name" covers the product trimmers, order items and cart lines;
+# "productName" is the bargain results' spelling. Usernames, business
+# names, session titles and Bit titles are deliberately absent - they are
+# not products, and letting them into the allowed set would license the
+# model to name one as if it were.
+PRODUCT_NAME_KEYS = ("name", "productName")
+
+
+def product_names(messages: list[dict]) -> set:
+    """Every product name any tool actually returned.
+
+    THE HALF OF GROUNDING THAT CANNOT BE DONE WITH A REGEX. A price or an
+    order id has a shape; a product name is arbitrary text, so it cannot
+    be located in prose without named entity recognition. What CAN be
+    done mechanically is the other direction - collecting the names that
+    are legitimately available - and that set is what an LLM judge is
+    then asked to compare a reply against.
+
+    Constraining the judge to a known list is the point. "Did this
+    hallucinate?" is a vague question a model answers unreliably; "does
+    this name anything outside these 8 strings?" is a comparison.
+    """
+    found: set = set()
+
+    def walk(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in PRODUCT_NAME_KEYS and isinstance(value, str) and value.strip():
+                    found.add(value.strip())
+                else:
+                    walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    for payload in tool_payloads(messages):
+        walk(payload)
+    return found
+
+
 def _amount(raw: str) -> float | None:
     try:
         return float(raw.replace(",", ""))
