@@ -21,7 +21,7 @@ FLOW:
 
 import json
 
-from app.evals import grounding
+from app.agent import grounding
 
 
 def tool(payload) -> dict:
@@ -159,3 +159,198 @@ class TestTheMoneyPatternDoesNotSeeThingsThatAreNotMoney:
         messages = [tool({"price": 800})]
         assert grounding.check("Rs. 800 for that.", messages).checked_amounts == 1
         assert grounding.check("Rs 800 for that.", messages).unmatched_amounts == []
+
+
+def exchange(tool_name, payload, call_id="t1"):
+    """One assistant tool_call plus its result - the shape the
+    orchestrator actually appends, since attribute() has to join the two
+    to learn a tool's NAME."""
+    return [
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": call_id, "type": "function",
+             "function": {"name": tool_name, "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": call_id, "content": json.dumps(payload)},
+    ]
+
+
+class TestAttributionNamesTheSource:
+    def test_a_price_is_traced_to_the_tool_that_returned_it(self):
+        messages = exchange("get_trending_products", [{"name": "kurta", "price": 599}])
+        claims = grounding.attribute("The kurta is ₹599.", messages)
+        assert len(claims) == 1
+        assert claims[0]["tool"] == "get_trending_products"
+        assert claims[0]["kind"] == "price"
+
+    def test_an_order_id_is_traced(self):
+        messages = exchange("get_order_history",
+                            {"orders": [{"orderId": "ORD1771057102499209"}]})
+        claims = grounding.attribute("Order ORD1771057102499209 shipped.", messages)
+        assert [c["kind"] for c in claims] == ["order_id"]
+        assert claims[0]["tool"] == "get_order_history"
+
+    def test_the_right_tool_is_named_when_several_ran(self):
+        messages = (
+            exchange("get_cart", {"total": 111}, "a")
+            + exchange("get_order_history", {"orders": [{"total": 222}]}, "b")
+        )
+        claims = grounding.attribute("Cart ₹111, order ₹222.", messages)
+        assert [(c["text"], c["tool"]) for c in claims] == [
+            ("₹111", "get_cart"), ("₹222", "get_order_history"),
+        ]
+
+
+class TestTheSpansAreUsableByAClient:
+    """The UI slices the reply by these offsets. If they are wrong it
+    marks the wrong words, which is worse than marking nothing."""
+
+    def test_slicing_the_reply_returns_exactly_the_claim(self):
+        messages = exchange("get_cart", {"total": 1199})
+        reply = "Your cart comes to ₹1,199 including shipping."
+        for claim in grounding.attribute(reply, messages):
+            assert reply[claim["start"]:claim["end"]] == claim["text"]
+
+    def test_the_span_covers_the_rupee_sign_not_just_the_digits(self):
+        messages = exchange("get_cart", {"total": 599})
+        claims = grounding.attribute("It is ₹599.", messages)
+        assert claims[0]["text"] == "₹599"
+
+    def test_the_same_price_twice_gets_two_separate_spans(self):
+        """Marking by searching for the text would highlight both from
+        one match, or the first one twice."""
+        messages = exchange("get_cart", {"total": 599})
+        reply = "₹599 now, ₹599 later."
+        claims = grounding.attribute(reply, messages)
+        assert len(claims) == 2
+        assert claims[0]["start"] != claims[1]["start"]
+        assert [reply[c["start"]:c["end"]] for c in claims] == ["₹599", "₹599"]
+
+    def test_claims_come_back_in_reading_order(self):
+        messages = exchange("get_order_history",
+                            {"orders": [{"orderId": "ORD1771057102499209",
+                                         "total": 1061}]})
+        reply = "Order ORD1771057102499209 came to ₹1,061."
+        claims = grounding.attribute(reply, messages)
+        assert [c["start"] for c in claims] == sorted(c["start"] for c in claims)
+
+
+class TestAttributionClaimsNothingItCannotProve:
+    def test_an_amount_no_tool_returned_is_not_attributed(self):
+        """The derived subtotal that check() reports as soft must not be
+        underlined as if a tool vouched for it."""
+        messages = exchange("get_cart", {"total": 1199})
+        claims = grounding.attribute("That works out around ₹4,999.", messages)
+        assert claims == []
+
+    def test_a_reply_with_no_messages_attributes_nothing(self):
+        assert grounding.attribute("It costs ₹599.", []) == []
+
+    def test_an_empty_reply_attributes_nothing(self):
+        assert grounding.attribute("", exchange("get_cart", {"total": 1})) == []
+
+    def test_a_result_whose_call_was_never_named_is_survived(self):
+        """A tool message with no matching assistant turn - defensive,
+        since a truncated history is a real shape."""
+        messages = [{"role": "tool", "tool_call_id": "orphan",
+                     "content": json.dumps({"total": 599})}]
+        claims = grounding.attribute("It is ₹599.", messages)
+        assert claims == [] or claims[0]["tool"] is None
+
+
+class TestDigitGroupsEndInADigit:
+    """Measured while building attribution: "₹111, order ₹222" produced
+    the span "₹111," because the digit class allowed a trailing comma.
+    It underlined the punctuation and reported the amount as "111,"."""
+
+    def test_a_trailing_comma_is_not_part_of_the_price(self):
+        messages = exchange("get_cart", {"total": 111})
+        claims = grounding.attribute("Cart ₹111, and more.", messages)
+        assert claims[0]["text"] == "₹111"
+
+    def test_indian_grouping_still_matches_whole(self):
+        messages = exchange("get_cart", {"total": 125500})
+        claims = grounding.attribute("It is ₹1,25,500 total.", messages)
+        assert claims[0]["text"] == "₹1,25,500"
+
+    def test_the_soft_finding_no_longer_carries_a_comma(self):
+        report = grounding.check("Around ₹4,999, roughly.", [ORDERS])
+        assert report.unmatched_amounts == ["4,999"]
+
+
+class TestTheLastFourDigitsForm:
+    """What the product actually writes. The prompt says to list orders
+    by "last 4 of the ID" and never to show internal ids, so a real reply
+    says "order ending 1378" - measured, a five-order answer produced
+    ZERO attributable ids before this pattern existed."""
+
+    ORDERS_TWO = exchange("get_order_history", {"orders": [
+        {"orderId": "ORD1771057102491378", "status": "confirmed"},
+        {"orderId": "ORD1771057102492662", "status": "cancelled"},
+    ]})
+
+    def test_a_suffix_is_traced_to_the_order_tool(self):
+        claims = grounding.attribute(
+            "Your order ending 1378 is confirmed.", self.ORDERS_TWO
+        )
+        assert [(c["kind"], c["text"]) for c in claims] == [
+            ("order_suffix", "1378")
+        ]
+        assert claims[0]["tool"] == "get_order_history"
+
+    def test_each_listed_order_is_attributed_separately(self):
+        reply = "- ending 1378 — confirmed\n- ending 2662 — cancelled"
+        claims = grounding.attribute(reply, self.ORDERS_TWO)
+        assert len(claims) == 2
+        assert [reply[c["start"]:c["end"]] for c in claims] == ["1378", "2662"]
+
+    def test_a_suffix_matching_no_order_is_not_attributed(self):
+        assert grounding.attribute("Order ending 9999.", self.ORDERS_TWO) == []
+
+    def test_only_order_shaped_strings_can_vouch_for_a_suffix(self):
+        """A product description ending in those digits must not stand in
+        for an order the user never placed."""
+        messages = exchange("search_products",
+                            [{"name": "Frame model 1378", "price": 500}])
+        assert grounding.attribute("Your order ending 1378.", messages) == []
+
+    def test_check_reports_an_invented_suffix_without_failing_the_answer(self):
+        report = grounding.check("Order ending 9999 shipped.", self.ORDERS_TWO)
+        assert report.unmatched_order_suffixes == ["9999"]
+        assert report.ok, (
+            "promoting this to a hard failure would re-score the whole eval "
+            "baseline - that must be its own measured change"
+        )
+
+
+class TestTheSuffixIsFoundByValueNotByWording:
+    """Two consecutive live runs wrote "order ending 1378" and
+    "order …1378" for the same data. Any pattern over the prose is a
+    guess about wording that changes between calls, so the real suffixes
+    are searched for directly."""
+
+    ORDERS = exchange("get_order_history", {"orders": [
+        {"orderId": "ORD1771057102491378", "status": "confirmed"},
+    ]})
+
+    def test_the_ellipsis_form_is_found(self):
+        claims = grounding.attribute("Your order …1378 is confirmed.", self.ORDERS)
+        assert [c["text"] for c in claims] == ["1378"]
+
+    def test_the_word_form_is_found_by_the_same_code(self):
+        claims = grounding.attribute("Your order ending 1378.", self.ORDERS)
+        assert [c["text"] for c in claims] == ["1378"]
+
+    def test_a_hash_form_would_also_be_found(self):
+        assert grounding.attribute("Order #1378.", self.ORDERS)[0]["text"] == "1378"
+
+    def test_digits_inside_a_longer_number_are_not_matched(self):
+        """A year or a bigger figure that merely contains the suffix must
+        not be underlined as an order reference."""
+        assert grounding.attribute("Expected 21378 units.", self.ORDERS) == []
+        assert grounding.attribute("Back in 13780 days.", self.ORDERS) == []
+
+    def test_a_full_id_and_its_own_suffix_do_not_double_mark(self):
+        reply = "Order ORD1771057102491378 is confirmed."
+        claims = grounding.attribute(reply, self.ORDERS)
+        assert len(claims) == 1, "the id and its last four overlap"
+        assert claims[0]["kind"] == "order_id"

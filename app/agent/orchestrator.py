@@ -56,6 +56,7 @@ import json
 
 import structlog
 
+from app.agent import grounding
 from app.agent.llm_client import (
     LLMBadRequest,
     LLMRateLimited,
@@ -492,6 +493,7 @@ async def run_conversation(
     history: list | None = None,
     on_event=None,
     products_out: list | None = None,
+    attribution_out: list | None = None,
 ) -> tuple[str, list]:
     """The conversation. Identical for both endpoints.
 
@@ -530,7 +532,7 @@ async def run_conversation(
     # One batch per tool call that surfaced products, in call order.
     batches: list[list[dict]] = []
 
-    async def _deliver_products(reply: str) -> None:
+    async def _deliver(reply: str, history: list) -> None:
         """The LAST batch, not every product seen this turn.
 
         A single question routinely fans out: "tell me about the blue
@@ -546,13 +548,23 @@ async def run_conversation(
         """
         if reply in FALLBACKS:
             return
+
         batch = batches[-1] if batches else []
-        if not batch:
-            return
-        batch = await attach_thumbnails(batch)
-        if products_out is not None:
-            products_out.extend(batch)
-        _emit(on_event, type="products", products=batch)
+        if batch:
+            batch = await attach_thumbnails(batch)
+            if products_out is not None:
+                products_out.extend(batch)
+            _emit(on_event, type="products", products=batch)
+
+        # ATTRIBUTION IS NOT GATED ON PRODUCTS. An order answer surfaces
+        # no cards at all, and is exactly where "where did this number
+        # come from" matters most, so it is sent whenever anything in the
+        # reply traces back to a lookup.
+        claims = grounding.attribute(reply, history)
+        if claims:
+            if attribution_out is not None:
+                attribution_out.extend(claims)
+            _emit(on_event, type="attribution", claims=claims)
 
     for _ in range(MAX_TOOL_ITERATIONS):
         # Reached only once EVERY provider has failed - so these
@@ -587,7 +599,7 @@ async def run_conversation(
                 continue
 
             messages.append({"role": "assistant", "content": completion.content})
-            await _deliver_products(completion.content)
+            await _deliver(completion.content, messages)
             return completion.content, messages
 
         messages.append({
@@ -615,7 +627,7 @@ async def run_conversation(
         #
         #   Each call collects its products into its OWN list, merged
         #   afterwards in call order. A shared list would fill in
-        #   COMPLETION order, and _deliver_products takes the last batch
+        #   COMPLETION order, and _deliver takes the last batch
         #   - which would silently become whichever query happened to
         #   finish last rather than the one the answer was written from.
         planned = []
@@ -690,5 +702,5 @@ async def run_conversation(
 
     logger.warning("max_tool_iterations_exceeded", user_id=user_id)
     reply, messages = await _synthesize_final_answer(messages, user_id, on_text=on_text)
-    await _deliver_products(reply)
+    await _deliver(reply, messages)
     return reply, messages

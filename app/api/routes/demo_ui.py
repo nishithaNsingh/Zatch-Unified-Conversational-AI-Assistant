@@ -362,6 +362,18 @@ PAGE = r"""
                   font-size:11.5px; }
   .card.open .detail { display:block; }
 
+  /* Attributed claims. A dotted underline rather than a highlight: every
+     number in a good answer is attributed, and highlighting all of them
+     turns the bubble into a colouring book. <mark> defaults to a yellow
+     background, so it is cleared explicitly. */
+  .msg mark.src { background:transparent; color:inherit; cursor:pointer;
+                  border-bottom:1px dashed var(--accent-dim); }
+  .msg mark.src:hover { border-bottom-color:var(--accent);
+                        background:rgba(0,217,154,.08); }
+  .srcnote { align-self:flex-start; color:var(--faint); font-size:11.5px;
+             padding:1px 6px 2px; animation:rise .2s ease-out; }
+  .srcnote b { color:var(--accent-dim); font-weight:600; }
+
   .jump {
     position:absolute; right:16px; bottom:78px; z-index:3;
     background:var(--surface-2); border:1px solid var(--line); color:var(--text);
@@ -692,7 +704,10 @@ function renderChat() {
     if (m.role === "user") add(m.text, "msg user");
     else if (m.role === "error") add(m.text, "msg err");
     else {
-      add(m.text, "msg bot");
+      const bubble = add(m.text, "msg bot");
+      if (m.attribution && m.attribution.length) {
+        renderAttributed(bubble, m.text, m.attribution);
+      }
       if (m.products) productCards(m.products);
       if (m.meta) metaLine(m.meta.timing, m.meta.checked);
     }
@@ -812,6 +827,50 @@ function productCards(products) {
   $("log").appendChild(wrap);
   stick();
   return wrap;
+}
+
+/* WHERE EACH NUMBER CAME FROM.
+
+   The server sends character offsets, and the text is SLICED by them
+   rather than searched for: a reply saying "₹599" twice would otherwise
+   mark the first occurrence twice and the second never.
+
+   Built from text nodes and <mark> elements - never innerHTML. The reply
+   is model output and the claim text came out of seller-written data, so
+   the same rule that governs add() governs this. */
+function renderAttributed(bubble, text, claims) {
+  bubble.textContent = "";
+  let at = 0;
+  (claims || []).forEach(c => {
+    // Defensive: a stale or overlapping span would garble the reply, and
+    // showing it wrong is worse than showing it unmarked.
+    if (typeof c.start !== "number" || c.start < at || c.end > text.length) return;
+    if (c.start > at) bubble.appendChild(document.createTextNode(text.slice(at, c.start)));
+
+    const label = SOURCES[c.tool] || "a lookup";
+    const mark = document.createElement("mark");
+    mark.className = "src";
+    mark.textContent = text.slice(c.start, c.end);
+    mark.title = "read from " + label;
+    mark.onclick = () => showSource(bubble, mark.textContent, label);
+    bubble.appendChild(mark);
+    at = c.end;
+  });
+  if (at < text.length) bubble.appendChild(document.createTextNode(text.slice(at)));
+}
+
+function showSource(bubble, text, label) {
+  let note = bubble.nextElementSibling;
+  if (!note || !note.classList.contains("srcnote")) {
+    note = document.createElement("div");
+    note.className = "srcnote";
+    bubble.parentNode.insertBefore(note, bubble.nextSibling);
+  }
+  note.textContent = "";
+  const strong = document.createElement("b");
+  strong.textContent = text;
+  note.append(strong, document.createTextNode(" — read from " + label));
+  stick();
 }
 
 function metaLine(timing, checked, copyText) {
@@ -1052,6 +1111,7 @@ async function send() {
   let status = null, bubble = null, firstToken = null;
   const checked = [];
   let products = [];
+  let attribution = [];
   const t0 = performance.now();
 
   function showStatus(label) {
@@ -1080,7 +1140,13 @@ async function send() {
     // never arrive as tokens at all, and this is what puts them on
     // screen without the client needing to know they are special.
     if (!bubble) bubble = add("", "msg bot");
-    if (reply) bubble.textContent = reply;
+    // The tokens drew plain text as they arrived; `done` carries the
+    // authoritative reply, which is the first point the spans can be
+    // trusted to line up with what is on screen.
+    if (reply) {
+      if (attribution.length) renderAttributed(bubble, reply, attribution);
+      else bubble.textContent = reply;
+    }
     bubble.classList.remove("writing");
     // Between the answer and its meta line, so the "checked" footnote
     // still reads as the last word on the turn.
@@ -1092,7 +1158,7 @@ async function send() {
       : (ms / 1000).toFixed(1) + "s";
     const src = checked.join(" · ");
     metaLine(timing, src, bubble.textContent);
-    thread.messages.push({role: "bot", text: bubble.textContent, products, meta: {timing, checked: src}});
+    thread.messages.push({role: "bot", text: bubble.textContent, products, attribution, meta: {timing, checked: src}});
     thread.updatedAt = Date.now();
     upsertThread();
   }
@@ -1147,6 +1213,7 @@ async function send() {
         }
         else if (name === "token") appendToken(payload.text);
         else if (name === "products") products = payload.products || [];
+        else if (name === "attribution") attribution = payload.claims || [];
         else if (name === "done")  finish(payload.reply);
         else if (name === "error") { fail(payload.message); return; }
       }

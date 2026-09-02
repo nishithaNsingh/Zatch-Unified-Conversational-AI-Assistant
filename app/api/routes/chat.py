@@ -63,12 +63,15 @@ async def chat(request: ChatRequest, user_id: str = Depends(rate_limited_user_id
     # product rows have to arrive in the response body rather than only
     # as an SSE event.
     products: list = []
+    attribution: list = []
     reply, messages = await run_conversation(
-        user_id, request.message, history=history, products_out=products
+        user_id, request.message, history=history,
+        products_out=products, attribution_out=attribution,
     )
     await session_store.save_session(user_id, request.session_id, messages)
     return ChatResponse(
-        reply=reply, session_id=request.session_id, products=products
+        reply=reply, session_id=request.session_id,
+        products=products, attribution=attribution,
     )
 
 
@@ -89,6 +92,8 @@ async def chat_stream(
       status    {"tool": "...", "label": "Looking up your orders"}
       token     {"text": "..."} - fragments of the answer
       products  {"products": [{"product_id": "...", "name": "...", ...}]}
+      attribution {"claims": [{"start": 12, "end": 18, "text": "₹1,199",
+                   "kind": "price", "tool": "get_order_history"}]}
       done      {"reply": "...", "session_id": "..."}
       error     {"message": "..."} - a sentence, never a stack trace
 

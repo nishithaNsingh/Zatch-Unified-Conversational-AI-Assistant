@@ -33,9 +33,29 @@ class ProductCard(BaseModel):
     image: str | None = None
 
 
+class Attribution(BaseModel):
+    """One claim in the reply, and the tool that vouched for it.
+
+    Character offsets into the reply rather than the text alone, so a
+    client marks the span by slicing. A reply that says "₹599" twice
+    would otherwise have both occurrences marked from a single match.
+
+    Only prices and order ids. A product NAME cannot be located in prose
+    without named entity recognition, so the honest thing is to mark what
+    can actually be stood behind - see agent/grounding.attribute.
+    """
+
+    start: int
+    end: int
+    text: str
+    kind: str   # "price" | "order_id"
+    tool: str
+
+
 class ChatResponse(BaseModel):
     reply: str
     session_id: str
     # Defaulted, so a client written against the old shape keeps
     # deserialising this response unchanged.
     products: list[ProductCard] = Field(default_factory=list)
+    attribution: list[Attribution] = Field(default_factory=list)

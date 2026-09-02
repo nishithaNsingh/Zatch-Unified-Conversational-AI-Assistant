@@ -397,7 +397,8 @@ class TestEnforcedOnTheEndpoint:
         # and spend quota on a test that has nothing to do with the
         # model. Stubbed out: what is under test is the third request
         # being refused, and that never reaches the orchestrator at all.
-        async def _no_llm(user_id, message, history=None, products_out=None):
+        async def _no_llm(user_id, message, history=None, products_out=None,
+                          attribution_out=None):
             return "stubbed reply", [{"role": "assistant", "content": "stubbed reply"}]
 
         monkeypatch.setattr(chat_route, "run_conversation", _no_llm)

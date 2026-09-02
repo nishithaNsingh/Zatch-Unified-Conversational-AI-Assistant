@@ -36,6 +36,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
+from app.agent import grounding
 from app.agent.orchestrator import (
     FALLBACK_BUSY,
     FALLBACK_UNAVAILABLE,
@@ -43,7 +44,6 @@ from app.agent.orchestrator import (
     build_system_prompt,
     run_conversation,
 )
-from app.evals import grounding
 from app.evals.cases import CASES, Case, resolve
 from app.repos import products_repo
 
