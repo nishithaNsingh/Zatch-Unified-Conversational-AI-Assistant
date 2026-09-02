@@ -181,3 +181,110 @@ class TestOrderCountIsNotTheWindowSize:
         from app.repos import orders_repo
 
         assert await orders_repo.count_orders("not-an-object-id") == 0
+
+
+class TestBargainListTrimming:
+    """list_bargains returns the raw documents - buyerId, sellerId, the
+    whole productSnapshot including its image URL, variant, quantity -
+    for an answer that needs a product, a price and what happened."""
+
+    def _bargain(self, status="pending", expires_days_ago=None, counter=None):
+        from datetime import timedelta
+        doc = {
+            "productSnapshot": {"name": "Cotton Kurta", "image": "https://cdn/x.jpg"},
+            "offeredPrice": 450, "originalPrice": 599, "status": status,
+            "orderPlaced": False,
+            # Present to prove they are dropped.
+            "buyerId": "b", "sellerId": "s", "variant": {"color": "blue"},
+            "quantity": 1, "discountPercentage": 25,
+        }
+        if counter:
+            doc["counterOffer"] = counter
+        if expires_days_ago is not None:
+            doc["expiresAt"] = NOW - timedelta(days=expires_days_ago)
+        return doc
+
+    def test_only_the_answerable_fields_survive(self):
+        from app.agent.tool_executor import _trim_bargain_list
+        row = _trim_bargain_list([self._bargain()])[0]
+        assert set(row) == {
+            "productName", "offeredPrice", "originalPrice", "status",
+            "hasCounterOffer", "orderPlaced", "expiresAt",
+        }
+        assert row["productName"] == "Cotton Kurta"
+        assert "image" not in str(row), "the CDN url must not reach the model"
+
+    def test_a_counter_offer_is_reduced_to_a_flag(self):
+        from app.agent.tool_executor import _trim_bargain_list
+        rows = _trim_bargain_list([self._bargain(counter={"price": 500})])
+        assert rows[0]["hasCounterOffer"] is True
+        assert _trim_bargain_list([self._bargain()])[0]["hasCounterOffer"] is False
+
+    def test_a_pending_offer_past_its_expiry_is_marked_lapsed(self):
+        """Same reasoning as isOverdue on orders: expiresAt is a date and
+        the model does not know today's, so "expires 12 July" reported in
+        September is true and useless."""
+        from app.agent.tool_executor import _trim_bargain_list
+        row = _trim_bargain_list([self._bargain(expires_days_ago=30)])[0]
+        assert row["hasLapsed"] is True
+
+    def test_a_resolved_offer_is_never_marked_lapsed(self):
+        from app.agent.tool_executor import _trim_bargain_list
+        for status in ("accepted", "auto_accepted", "expired"):
+            row = _trim_bargain_list([self._bargain(status, expires_days_ago=30)])[0]
+            assert "hasLapsed" not in row, f"{status} has already resolved"
+
+    def test_a_future_expiry_is_not_lapsed(self):
+        from app.agent.tool_executor import _trim_bargain_list
+        row = _trim_bargain_list([self._bargain(expires_days_ago=-5)])[0]
+        assert "hasLapsed" not in row
+
+    def test_the_list_is_capped(self):
+        from app.agent.tool_executor import LLM_LIST_LIMIT_CAP, _trim_bargain_list
+        rows = _trim_bargain_list([self._bargain()] * 40)
+        assert len(rows) == LLM_LIST_LIMIT_CAP
+
+    def test_none_is_survived(self):
+        from app.agent.tool_executor import _trim_bargain_list
+        assert _trim_bargain_list(None) == []
+
+
+class TestBargainExpiryIsCountedNotJustDated:
+    """Measured: handed expiresAt raw, the model wrote "expired at
+    2026-07-09T09:15:32" into a phone chat bubble. The orders trimmer
+    already solved this shape with daysLate."""
+
+    def _b(self, status, days_ago):
+        from datetime import timedelta
+        return {
+            "productSnapshot": {"name": "saree"}, "offeredPrice": 518,
+            "originalPrice": 699, "status": status,
+            "expiresAt": NOW - timedelta(days=days_ago),
+        }
+
+    def test_a_lapsed_offer_says_how_long_ago(self):
+        from app.agent.tool_executor import _trim_bargain_list
+        row = _trim_bargain_list([self._b("pending", 55)])[0]
+        assert row["hasLapsed"] is True
+        assert row["lapsedDaysAgo"] == 55
+
+    def test_a_live_offer_says_how_long_is_left(self):
+        from app.agent.tool_executor import _trim_bargain_list
+        row = _trim_bargain_list([self._b("pending", -3)])[0]
+        assert row["expiresInDays"] == 3
+        assert "hasLapsed" not in row
+
+    def test_an_expired_offer_is_counted_but_not_flagged(self):
+        """For an expired offer the expiry IS what happened, so the count
+        belongs - but the flag does not: its status already says so."""
+        from app.agent.tool_executor import _trim_bargain_list
+        row = _trim_bargain_list([self._b("expired", 55)])[0]
+        assert row["lapsedDaysAgo"] == 55
+        assert "hasLapsed" not in row
+
+    def test_an_accepted_offer_gets_no_countdown_at_all(self):
+        """It resolved another way - the expiry date is irrelevant."""
+        from app.agent.tool_executor import _trim_bargain_list
+        row = _trim_bargain_list([self._b("accepted", 55)])[0]
+        assert "hasLapsed" not in row
+        assert "lapsedDaysAgo" not in row

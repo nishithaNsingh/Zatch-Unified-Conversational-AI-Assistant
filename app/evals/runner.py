@@ -23,7 +23,7 @@ WHAT A CASE HAS TO SATISFY:
     there.
 
 ON QUOTA:
-    Every case is a full conversation: system prompt plus 34 tool
+    Every case is a full conversation: system prompt plus 35 tool
     schemas, times however many tool rounds it takes. The live tests in
     this repo already recorded what happens when several of those land
     inside one minute, so the runner paces itself between cases and can

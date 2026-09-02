@@ -502,7 +502,7 @@ class Completion:
     prompt_tokens: int
     # HOW MANY OF THOSE PROMPT TOKENS WERE ALREADY CACHED.
     #
-    # The prefix - system prompt plus 34 tool schemas - is re-sent on
+    # The prefix - system prompt plus 35 tool schemas - is re-sent on
     # every round, and both Azure and Groq cache it automatically. There
     # is a whole test module guarding that prefix against drift
     # (test_prompt_cache_stability) and a script that warms it before a

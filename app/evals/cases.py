@@ -113,15 +113,22 @@ CASES: list[Case] = [
     _c("bargain-offer", "What should I offer for {product}?",
        ("suggest_offer_amount", "check_bargain_eligibility",
         "search_products_by_name")),
-    # THIS CASE USED TO ASK "What happened to my offers?" AND WAS WRONG.
-    # It failed the baseline, and the model was right: get_bargain_status
-    # returns None without a bargain_id or product_id (bargains_repo.py),
-    # and nothing in the registry lists a user's bargains. Asking which
+    # THIS CASE CAME BACK. It originally asked "What happened to my
+    # offers?", failed the baseline, and was retired because the model
+    # was RIGHT: get_bargain_status returns None without a bargain_id or
+    # a product_id, and nothing listed a user's bargains, so asking which
     # product was the only correct move available.
     #
-    # A case the system cannot satisfy teaches nothing except to distrust
-    # the suite, so it now asks the question the tools CAN answer. The
-    # missing capability is recorded as a gap, not as a failing test.
+    # list_bargains closed that gap, so the question is answerable and
+    # the case is worth having again. The retired version - scoped to one
+    # named product - is kept beside it, because the two go through
+    # completely different tools and both are real questions.
+    _c("bargain-list", "What happened to my offers?",
+       ("list_bargains",),
+       note="Unanswerable until list_bargains existed. A failing case "
+            "the system cannot satisfy teaches only distrust, so this "
+            "was retired rather than left red - and restored once the "
+            "capability landed."),
     _c("bargain-status", "What happened to my offer on {product}?",
        ("get_bargain_status", "get_counter_offer", "search_products_by_name")),
 

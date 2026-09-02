@@ -55,7 +55,7 @@ from bson import ObjectId
 
 from app.agent.tools import TOOL_REGISTRY
 from app.config.settings import get_settings
-from app.repos import orders_repo, products_repo
+from app.repos import bargains_repo, orders_repo, products_repo
 from app.repos.base import to_object_id
 
 logger = structlog.get_logger()
@@ -204,6 +204,60 @@ def _trim_order_history(orders: list) -> list:
             if days_late > 0:
                 row["isOverdue"] = True
                 row["daysLate"] = days_late
+        out.append(row)
+
+    return out
+
+
+def _trim_bargain_list(bargains: list) -> list:
+    """list_bargains - the raw documents carry buyerId, sellerId, the
+    whole productSnapshot including its image URL, variant and quantity,
+    for an answer that needs a product, a price and what happened.
+
+    IT ALSO SAYS WHETHER A PENDING OFFER HAS LAPSED, for exactly the
+    reason _trim_order_history computes isOverdue: expiresAt is a date,
+    the model does not know today's, and "expires 12 July" reported
+    flatly in September is true and useless. Only for offers still
+    pending - an accepted or expired one has already resolved.
+    """
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    out = []
+
+    for bargain in (bargains or [])[:LLM_LIST_LIMIT_CAP]:
+        expires = bargain.get("expiresAt")
+        status = (bargain.get("status") or "").lower()
+        row = {
+            "productName": (bargain.get("productSnapshot") or {}).get("name"),
+            "offeredPrice": bargain.get("offeredPrice"),
+            "originalPrice": bargain.get("originalPrice"),
+            "status": bargain.get("status"),
+            "hasCounterOffer": bool(bargain.get("counterOffer")),
+            "orderPlaced": bool(bargain.get("orderPlaced")),
+            "expiresAt": expires,
+        }
+        # THE DATE ALONE READS BADLY IN A CHAT BUBBLE, and a measured
+        # answer proved it: handed expiresAt raw, the model printed
+        # "expired at 2026-07-09T09:15:32" into a phone message. Same
+        # defect _trim_order_history solved with daysLate - the model
+        # cannot subtract from a date it does not have, so the number it
+        # actually wants to say is computed here.
+        if isinstance(expires, datetime):
+            days = (now - expires).days
+            if expires > now:
+                row["expiresInDays"] = -days
+            elif status in ("pending", "expired"):
+                # The count is given for BOTH, because for an expired
+                # offer the expiry IS what happened - and the first
+                # version of this skipped it, leaving the model to print
+                # "expired on 2026-07-09 09:15" beside a sibling offer
+                # that correctly read "lapsed 54 days ago".
+                row["lapsedDaysAgo"] = days
+                # ...but only PENDING gets the flag. An offer already
+                # marked expired says so in its status; one still marked
+                # pending whose date has passed is the surprising state
+                # the model cannot infer on its own.
+                if status == "pending":
+                    row["hasLapsed"] = True
         out.append(row)
 
     return out
@@ -432,6 +486,7 @@ _TRIMMERS = {
     "get_cart": _enrich_cart,                        # async
     "get_saved_items": _enrich_saved_items,           # async
     "get_followers_or_following": _trim_follow_list,
+    "list_bargains": _trim_bargain_list,
 }
 
 
@@ -463,8 +518,25 @@ async def _summarise_orders(trimmed: list, user_id: str) -> dict:
     }
 
 
+async def _summarise_bargains(trimmed: list, user_id: str) -> dict:
+    total = await bargains_repo.count_bargains(user_id)
+    return {
+        "offers": trimmed,
+        "showing": len(trimmed),
+        "totalOffers": total,
+        "note": (
+            f"Showing the {len(trimmed)} most recent of {total} offers."
+            if total > len(trimmed)
+            else None
+        ),
+    }
+
+
 _SUMMARISERS = {
     "get_order_history": _summarise_orders,
+    # Same defect, same fix: a capped list with no total reads as the
+    # total. One line, because the map exists.
+    "list_bargains": _summarise_bargains,
 }
 
 

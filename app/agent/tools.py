@@ -2,7 +2,7 @@
 WHAT:
     Formal tool definitions the LLM can choose to call, covering Phase
     5's top-3 priority areas: Order Management, Product Discovery,
-    Bargaining, Live Shopping, Bits and Reviews (34 tools total).
+    Bargaining, Live Shopping, Bits and Reviews (35 tools total).
     Each tool maps to an exact repo
     function from Phase 4.
 
@@ -327,6 +327,28 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            # NEEDS NOTHING FROM THE USER, and the description says so
+            # because the sibling tools do not. Measured on
+            # get_recommendations: a schema that sounded like it required
+            # context made the model ask four questions instead of
+            # calling it. Both bargain lookups below genuinely need an
+            # id, so without this line the model reasonably assumes this
+            # one does too.
+            "name": "list_bargains",
+            "description": "Every offer the user has made, newest first, and "
+                           "what happened to each. Takes no required arguments "
+                           "- use this for 'what happened to my offers', where "
+                           "get_bargain_status needs a specific product.",
+            "parameters": {
+                "type": "object",
+                "properties": {"limit": {"type": "integer"}},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_bargain_status",
             "description": "Status of the user's own bargain offer, by bargain ID or product ID.",
             "parameters": {
@@ -553,6 +575,7 @@ TOOL_REGISTRY = {
     "get_seller_info": (products_repo.get_seller_info, False),
     "check_bargain_eligibility": (bargains_repo.check_bargain_eligibility, False),
     "suggest_offer_amount": (bargains_repo.suggest_offer_amount, False),
+    "list_bargains": (bargains_repo.list_bargains, True),
     "get_bargain_status": (bargains_repo.get_bargain_status, True),
     "get_counter_offer": (bargains_repo.get_counter_offer, True),
     "search_products_by_name": (products_repo.search_products_by_name, False),

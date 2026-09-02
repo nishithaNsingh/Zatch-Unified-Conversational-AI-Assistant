@@ -188,3 +188,48 @@ async def get_counter_offer(
         "message": counter.get("message"),
         "offeredAt": counter.get("offeredAt"),
     }
+
+async def count_bargains(user_id: str) -> int:
+    """How many offers this user has made, in total.
+
+    Exists for the same reason orders_repo.count_orders does: a capped
+    list handed over with no total reads AS the total. Measured there on
+    a real account - 67 orders, answered as "you have 8".
+    """
+    buyer_object_id = to_object_id(user_id)
+    if buyer_object_id is None:
+        return 0
+    db = get_database()
+    return await db[BARGAINS_COLLECTION].count_documents({"buyerId": buyer_object_id})
+
+
+async def list_bargains(user_id: str, limit: int = 5) -> list[dict]:
+    """Every offer this user has made, newest first.
+
+    WHY THIS DID NOT EXIST, AND WHY THAT WAS A HOLE. Every other bargain
+    lookup takes a bargain_id or a product_id, which is right for "what
+    happened to my offer on the blue kurta" and useless for "what
+    happened to my offers" - a user has neither id to hand. Asked that,
+    the assistant could only ask which product, and the eval case that
+    caught it was retired as unanswerable rather than fixed.
+
+    Bargaining is the feature Zatch is built around, so a buyer being
+    unable to ask about their own offers was the gap worth closing.
+
+    SCOPED BY buyerId, like every other user-facing bargain query - the
+    id is server-injected and never comes from the model.
+    """
+    buyer_object_id = to_object_id(user_id)
+    if buyer_object_id is None:
+        return []
+
+    db = get_database()
+    projection = get_projection(BARGAINS_COLLECTION)
+    cursor = (
+        db[BARGAINS_COLLECTION]
+        .find({"buyerId": buyer_object_id}, projection)
+        .sort("createdAt", -1)
+        .limit(limit)
+    )
+    docs = await cursor.to_list(length=limit)
+    return [sanitize_document(BARGAINS_COLLECTION, doc) for doc in docs]

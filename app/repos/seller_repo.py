@@ -33,7 +33,7 @@ WHAT WIRING IT UP WOULD TAKE, so the next person does not get it wrong:
        it first, and exposing that shape directly would let the model
        ask for ANY seller's revenue, payout amounts and coupon
        performance - the exact cross-user leak that keeping user_id out
-       of all 34 schemas exists to prevent. It has to be the verified
+       of all 35 schemas exists to prevent. It has to be the verified
        JWT subject, injected server-side, the way orders_repo's user_id
        already is.
     2. Because TOOL_REGISTRY injects the verified id as `user_id=` and

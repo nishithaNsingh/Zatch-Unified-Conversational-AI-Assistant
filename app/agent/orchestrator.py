@@ -72,7 +72,7 @@ from app.repos import products_repo
 logger = structlog.get_logger()
 
 # Lowered from 5 after measuring: every round re-sends the full prompt
-# and all 34 tool schemas, so the cap is a direct multiplier on token
+# and all 35 tool schemas, so the cap is a direct multiplier on token
 # spend. Nothing in the real conversations we tested needed more than
 # two rounds, and a model still confused after three is not going to
 # resolve it on the fourth - it just costs another full prompt.
@@ -265,6 +265,7 @@ _TOOL_STATUS = {
     "get_product_reviews": "Reading the reviews",
     "check_bargain_eligibility": "Checking if bargaining is allowed",
     "suggest_offer_amount": "Working out a fair offer",
+    "list_bargains": "Looking up your offers",
     "get_bargain_status": "Checking your offer",
     "get_counter_offer": "Checking for a counter-offer",
     "get_live_now": "Seeing what is live",
