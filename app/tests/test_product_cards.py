@@ -137,6 +137,74 @@ class TestTheCollectorIsActuallyFilled:
         assert json.loads(await execute_tool("get_trending_products", {}, "u1"))
 
 
+def images_on(monkeypatch):
+    """Turns thumbnails on. They are OFF by default now - see
+    TestImagesAreWithheldUntilTheCdnCanResize - so anything testing the
+    attach path has to enable them explicitly."""
+    from types import SimpleNamespace
+
+    from app.agent import tool_executor
+    monkeypatch.setattr(
+        tool_executor, "get_settings",
+        lambda: SimpleNamespace(product_image_query="?width=96&quality=75"),
+    )
+
+
+class TestImagesAreWithheldUntilTheCdnCanResize:
+    """The catalogue holds full-resolution originals. One measured
+    product image is 8.5 MB - a 6144x8192 photograph - rendered into a
+    46-pixel square, and a trending answer pulled roughly 10 MB for eight
+    of them.
+
+    Bunny Optimizer is not enabled on the pull zone, so there is nothing
+    useful to append and nothing safe to send. Withheld by default
+    because the failure is silent: the app works perfectly and quietly
+    burns a mobile data plan."""
+
+    async def test_no_image_is_attached_when_the_query_is_empty(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from app.agent import tool_executor
+        monkeypatch.setattr(
+            tool_executor, "get_settings",
+            lambda: SimpleNamespace(product_image_query=""),
+        )
+        cards = await tool_executor.attach_thumbnails([product()])
+        assert "image" not in cards[0]
+        assert cards[0]["name"] == "kurta", "the card itself still ships"
+
+    async def test_the_database_is_not_even_queried(self, monkeypatch):
+        """A withheld image should cost nothing, not a wasted round trip."""
+        from types import SimpleNamespace
+
+        from app.agent import tool_executor
+
+        async def boom(ids):
+            raise AssertionError("no lookup should happen when images are off")
+
+        monkeypatch.setattr(
+            tool_executor, "get_settings",
+            lambda: SimpleNamespace(product_image_query=""),
+        )
+        monkeypatch.setattr(tool_executor.products_repo, "get_products_by_ids", boom)
+        await tool_executor.attach_thumbnails([product()])
+
+    async def test_setting_the_query_turns_them_back_on(self, monkeypatch):
+        """The whole point: this is a config change, not a code change."""
+        from bson import ObjectId
+
+        from app.agent import tool_executor
+        images_on(monkeypatch)
+
+        async def fake(ids):
+            return [{"_id": ObjectId("a" * 24),
+                     "images": [{"url": "https://cdn.example/a.jpg"}]}]
+
+        monkeypatch.setattr(tool_executor.products_repo, "get_products_by_ids", fake)
+        cards = await tool_executor.attach_thumbnails([product()])
+        assert cards[0]["image"] == "https://cdn.example/a.jpg?width=96&quality=75"
+
+
 class TestThumbnails:
     """The trimmers drop images because the model cannot use a CDN URL.
     The card is the one consumer that can, so it fetches them itself -
@@ -144,6 +212,7 @@ class TestThumbnails:
     missing picture is not a reason to lose the product."""
 
     async def test_the_first_image_is_attached(self, monkeypatch):
+        images_on(monkeypatch)
         from bson import ObjectId
 
         from app.agent import tool_executor
@@ -156,9 +225,12 @@ class TestThumbnails:
 
         monkeypatch.setattr(tool_executor.products_repo, "get_products_by_ids", fake_by_ids)
         cards = await tool_executor.attach_thumbnails([product()])
-        assert cards[0]["image"] == "https://cdn.example/one.jpg"
+        assert cards[0]["image"] == (
+            "https://cdn.example/one.jpg?width=96&quality=75"
+        ), "the FIRST image, with the resize parameters appended"
 
     async def test_a_product_with_no_images_gets_none(self, monkeypatch):
+        images_on(monkeypatch)
         from bson import ObjectId
 
         from app.agent import tool_executor
@@ -172,6 +244,7 @@ class TestThumbnails:
         assert cards[0]["name"] == "kurta", "the card survives the missing picture"
 
     async def test_a_failed_lookup_keeps_every_card(self, monkeypatch):
+        images_on(monkeypatch)
         from app.agent import tool_executor
 
         async def boom(ids):
@@ -183,6 +256,7 @@ class TestThumbnails:
         assert all("image" not in c for c in cards)
 
     async def test_an_unparseable_id_does_not_reach_the_database(self, monkeypatch):
+        images_on(monkeypatch)
         from app.agent import tool_executor
 
         called = False
@@ -198,6 +272,7 @@ class TestThumbnails:
         assert not called, "no query is worth making for an id Mongo cannot parse"
 
     async def test_no_cards_means_no_query(self, monkeypatch):
+        images_on(monkeypatch)
         from app.agent import tool_executor
 
         async def boom(ids):

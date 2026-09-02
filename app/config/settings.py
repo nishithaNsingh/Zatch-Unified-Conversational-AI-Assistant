@@ -176,14 +176,26 @@ class Settings(BaseSettings):
     # nothing useful to append yet, and appending a parameter the CDN
     # ignores would only look like it worked.
     #
-    # Once the Optimizer is switched on, this becomes a config change
-    # rather than a code one - set it to "?width=96&quality=75" and every
-    # card gets light without redeploying anything.
+    # EMPTY MEANS NO IMAGE IS SERVED AT ALL - it is a switch, not just a
+    # suffix. Measured after the first version shipped the originals: one
+    # product image is 8.5 MB, a 6144x8192 photograph, drawn at 46 pixels,
+    # and one trending answer pulled roughly 10 MB for eight cards.
+    #
+    # Off by default because that failure is silent. The cards render,
+    # the app works, and the only symptom is somebody's data plan. A
+    # picture is worth having only once it can be sent small.
+    #
+    # Once the Optimizer is switched on, turning images back on is a
+    # config change rather than a code one - set it to
+    # "?width=96&quality=75" and every card gets light without a redeploy.
     product_image_query: str = Field(
         default="",
         description="Query string appended to product image URLs to request a "
-                    "CDN-resized thumbnail, e.g. '?width=96&quality=75'. Empty "
-                    "until Bunny Optimizer is enabled on the pull zone.",
+                    "CDN-resized thumbnail, e.g. '?width=96&quality=75'. EMPTY "
+                    "MEANS NO IMAGES ARE SERVED - the catalogue holds "
+                    "full-resolution originals (one measured at 8.5MB), so "
+                    "leave this empty until Bunny Optimizer is enabled on the "
+                    "pull zone.",
     )
 
     # OPTIONAL. Where state SHARED BETWEEN WORKERS lives - conversation

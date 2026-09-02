@@ -129,8 +129,16 @@ CASES: list[Case] = [
             "the system cannot satisfy teaches only distrust, so this "
             "was retired rather than left red - and restored once the "
             "capability landed."),
+    # list_bargains IS ACCEPTED HERE, and that was a correction rather
+    # than a concession. Adding the tool "broke" this case: the model
+    # stopped searching for the product and called list_bargains instead,
+    # which answered "your offer history is empty" in ONE call where the
+    # old route needed a search first. A better answer, failed by a case
+    # that pinned a script instead of an outcome - the exact thing the
+    # module docstring above warns against.
     _c("bargain-status", "What happened to my offer on {product}?",
-       ("get_bargain_status", "get_counter_offer", "search_products_by_name")),
+       ("get_bargain_status", "get_counter_offer", "search_products_by_name",
+        "list_bargains")),
 
     # ── Live and Bits ────────────────────────────────────────────────
     _c("live-now", "Is anyone live right now?", ("get_live_now",)),

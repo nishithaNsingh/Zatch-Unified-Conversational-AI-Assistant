@@ -627,6 +627,28 @@ def _product_cards(tool_name: str, result) -> list[dict]:
     return cards
 
 
+# Said once per process rather than per answer. A silent "no pictures"
+# is exactly the kind of invisible state that wastes an afternoon.
+_image_guard_announced = False
+
+
+def _images_enabled() -> bool:
+    global _image_guard_announced
+    if get_settings().product_image_query:
+        return True
+    if not _image_guard_announced:
+        _image_guard_announced = True
+        logger.warning(
+            "product_images_withheld",
+            reason="PRODUCT_IMAGE_QUERY is empty, and the catalogue holds "
+                   "full-resolution originals - one measured at 8.5MB for a "
+                   "46px thumbnail",
+            fix="enable Bunny Optimizer on the pull zone, then set "
+                "PRODUCT_IMAGE_QUERY='?width=96&quality=75'",
+        )
+    return False
+
+
 async def attach_thumbnails(cards: list[dict]) -> list[dict]:
     """One batched query for the images the trimmers threw away.
 
@@ -643,8 +665,25 @@ async def attach_thumbnails(cards: list[dict]) -> list[dict]:
 
     A missing thumbnail is never a reason to lose the card: every failure
     here degrades to no image rather than no products.
+
+    NO IMAGE IS SERVED UNTIL THE CDN CAN RESIZE ONE. The catalogue holds
+    full-resolution originals: one measured product image is 8.5 MB, a
+    6144x8192 photograph, rendered into a 46-pixel square. Eight of those
+    is roughly 10 MB for a single answer, on a phone, in a market where
+    mobile data is the cost that matters.
+
+    Bunny's Optimizer fixes it at the CDN, and product_image_query is
+    where its parameters go. Left empty - which it is until someone
+    enables the Optimizer on the pull zone - this returns the cards
+    without images rather than shipping the originals. The guard is the
+    default because the failure is silent and expensive: the app works
+    perfectly and quietly burns a data plan.
     """
     if not cards:
+        return cards
+
+    # Checked BEFORE the query, so a withheld image costs no round trip.
+    if not _images_enabled():
         return cards
 
     ids = [oid for oid in (to_object_id(c["product_id"]) for c in cards) if oid is not None]
@@ -657,7 +696,6 @@ async def attach_thumbnails(cards: list[dict]) -> list[dict]:
         logger.warning("product_thumbnail_lookup_failed", error=str(exc))
         return cards
 
-    # Empty until the CDN can actually resize - see product_image_query.
     suffix = get_settings().product_image_query
 
     first_image = {}

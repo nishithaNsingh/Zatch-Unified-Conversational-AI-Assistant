@@ -37,3 +37,8 @@ product_embeddings.backup.json
 # the same reason the schema dumps above cannot. Keep runs locally and
 # compare them locally; record the SCORE in the PR, not the transcript.
 /evals/
+
+# Claude Code's per-machine permission allowlist. The skills beside it in
+# .claude/ ARE shared; this file is whatever one laptop happened to
+# approve.
+.claude/settings.local.json
