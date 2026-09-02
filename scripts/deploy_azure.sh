@@ -14,9 +14,16 @@
 #
 set -euo pipefail
 
+# Git Bash on Windows rewrites any argument that looks like a Unix path
+# into a Windows one before a native binary sees it, so an Azure resource
+# ID arrives as 'C:/Program Files/Git/subscriptions/...' and the API
+# rejects it. Harmless-looking and confusing to diagnose, because echo is
+# a builtin and prints the ID correctly.
+export MSYS_NO_PATHCONV=1
+
 # ── Names. Change RG if you already have one you'd rather use. ────────
 RG=zatch-demo-rg
-LOC=centralindia          # see step 0 - match your Azure OpenAI region
+LOC=southeastasia      # beside the Atlas cluster - see step 0; OpenAI is in eastus
 VNET=zatch-vnet
 SUBNET=zatch-aca-subnet
 NATGW=zatch-nat
@@ -105,7 +112,16 @@ az containerapp env create \
 az acr create --resource-group "$RG" --name "$ACR" \
   --sku Basic --admin-enabled true --output table
 
-az acr build --registry "$ACR" --image zatch-assistant:v1 .
+# ACR Tasks - which is what `az acr build` uses - is blocked on trial and
+# sponsored subscriptions (TasksOperationsNotAllowed). Build locally and
+# push instead; same image, but a few hundred MB goes up your uplink.
+#
+#   az acr build --registry "$ACR" --image zatch-assistant:v1 .
+#
+IMG="$ACR.azurecr.io/zatch-assistant:v1"
+docker build -t "$IMG" .
+az acr login -n "$ACR"
+docker push "$IMG"
 
 # ══════════════════════════════════════════════════════════════════════
 # 6. Deploy. Secrets are set separately from env vars so the values are
