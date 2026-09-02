@@ -479,6 +479,20 @@ class ToolCall:
         }
 
 
+def _cached_tokens(usage: dict) -> int:
+    """Cached prefix tokens out of a usage payload.
+
+    Nested under prompt_tokens_details on the OpenAI-compatible shape
+    Azure returns. Providers that do not cache omit the whole object,
+    and at least one sends it as null rather than leaving it out - both
+    read as zero rather than raising.
+    """
+    details = usage.get("prompt_tokens_details") or {}
+    if not isinstance(details, dict):
+        return 0
+    return int(details.get("cached_tokens") or 0)
+
+
 @dataclass(frozen=True)
 class Completion:
     content: str | None
@@ -486,6 +500,20 @@ class Completion:
     provider: str
     model: str
     prompt_tokens: int
+    # HOW MANY OF THOSE PROMPT TOKENS WERE ALREADY CACHED.
+    #
+    # The prefix - system prompt plus 34 tool schemas - is re-sent on
+    # every round, and both Azure and Groq cache it automatically. There
+    # is a whole test module guarding that prefix against drift
+    # (test_prompt_cache_stability) and a script that warms it before a
+    # demo, and until now NOTHING measured whether any of it worked: a
+    # single stray byte would silently double the bill and reinstate the
+    # rate limit, with the assistant still answering perfectly.
+    #
+    # Defaulted, because not every provider reports it. Zero therefore
+    # means "not reported OR a genuine miss" - which is why it is logged
+    # beside prompt_tokens rather than alone.
+    cached_tokens: int = 0
 
 
 # -- The call --------------------------------------------------------
@@ -624,12 +652,14 @@ async def complete(
         message.get("content"),
     )
 
+    usage = body.get("usage") or {}
     return Completion(
         content=message.get("content"),
         tool_calls=tool_calls,
         provider=provider.name,
         model=provider.model,
-        prompt_tokens=(body.get("usage") or {}).get("prompt_tokens", 0),
+        prompt_tokens=usage.get("prompt_tokens", 0),
+        cached_tokens=_cached_tokens(usage),
     )
 
 
@@ -682,6 +712,7 @@ async def stream(
     partial_calls: dict[int, dict] = {}
     finish_reason = None
     prompt_tokens = 0
+    cached_tokens = 0
 
     try:
         async with _get_http_client().stream(
@@ -711,6 +742,7 @@ async def stream(
                 usage = chunk.get("usage") or {}
                 if usage.get("prompt_tokens"):
                     prompt_tokens = usage["prompt_tokens"]
+                    cached_tokens = _cached_tokens(usage)
 
                 choices = chunk.get("choices") or []
                 if not choices:
@@ -775,4 +807,5 @@ async def stream(
         provider=provider.name,
         model=provider.model,
         prompt_tokens=prompt_tokens,
+        cached_tokens=cached_tokens,
     )

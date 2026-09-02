@@ -15,10 +15,14 @@ WHY:
     first question lands on a warm cache.
 
 HOW IT PROVES IT:
-    The usage payload does not expose cache hits, so asserting "warmed"
-    would be a claim, not a measurement. Instead it sends the prefix
-    TWICE and reports Groq's `prompt_time`. A cold prefix takes several
-    times longer to process than a cached one; the drop between call one
+    Azure and OpenAI report the cache directly, as
+    usage.prompt_tokens_details.cached_tokens - a measurement rather than
+    a deduction, and what this prefers when it is present. Measured on
+    the real prefix: 1,792 of 1,897 prompt tokens cached, 94%.
+
+    Groq does not report it, so there the prefix is sent TWICE and
+    `prompt_time` is reported instead. A cold prefix takes several times
+    longer to process than a cached one, and the drop between call one
     and call two is the cache engaging, observed rather than assumed.
 
 WHAT MAKES THIS CORRECT:

@@ -411,6 +411,7 @@ async def _complete_with_failover(
                     model=provider.model,
                     fell_back=position > 0,
                     prompt_tokens=completion.prompt_tokens,
+                    cached_tokens=completion.cached_tokens,
                 )
                 return completion
 

@@ -130,3 +130,45 @@ class TestTheDynamicInputIsSorted:
         result = await products_repo.get_distinct_categories()
         assert result["categories"] == sorted(result["categories"])
         assert result["subCategories"] == sorted(result["subCategories"])
+
+
+class TestTheCacheIsMeasuredNotAssumed:
+    """The module above guards the prefix from drifting, and warm_cache.py
+    pre-warms it - but until Completion carried cached_tokens, NOTHING in
+    the running service could tell whether either worked. A stray byte
+    would double the bill and reinstate the rate limit while the
+    assistant kept answering perfectly, which is exactly the failure that
+    stays invisible without a number.
+
+    Measured against the real prefix on azure/gpt-5-mini: 1,792 of 1,897
+    prompt tokens cached, 94%, stable across consecutive calls.
+    """
+
+    def test_the_nested_cached_count_is_read(self):
+        from app.agent.llm_client import _cached_tokens
+        assert _cached_tokens(
+            {"prompt_tokens": 1897, "prompt_tokens_details": {"cached_tokens": 1792}}
+        ) == 1792
+
+    def test_a_provider_that_does_not_cache_reads_as_zero(self):
+        from app.agent.llm_client import _cached_tokens
+        assert _cached_tokens({"prompt_tokens": 1897}) == 0
+
+    def test_a_null_details_object_reads_as_zero(self):
+        """At least one provider sends the key as null rather than
+        omitting it, which `or {}` has to absorb."""
+        from app.agent.llm_client import _cached_tokens
+        assert _cached_tokens({"prompt_tokens_details": None}) == 0
+        assert _cached_tokens({"prompt_tokens_details": {"cached_tokens": None}}) == 0
+
+    def test_a_details_object_of_the_wrong_shape_does_not_raise(self):
+        from app.agent.llm_client import _cached_tokens
+        assert _cached_tokens({"prompt_tokens_details": []}) == 0
+        assert _cached_tokens({}) == 0
+
+    def test_completion_defaults_to_zero_so_old_constructors_still_work(self):
+        """Completion is built positionally in several tests with five
+        arguments. The new field must not break them."""
+        from app.agent.llm_client import Completion
+        completion = Completion("answer", [], "scripted", "m", 100)
+        assert completion.cached_tokens == 0
