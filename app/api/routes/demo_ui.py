@@ -713,7 +713,18 @@ function renderChat() {
       if (m.meta) metaLine(m.meta.timing, m.meta.checked);
     }
   });
-  stick(true);
+  // DEFERRED A FRAME, because every caller renders BEFORE showScreen().
+  // While the chat screen is still hidden #logScroll has no height, so
+  // assigning scrollTop does nothing at all - and the scroll silently
+  // did not happen. Measured: reopening a saved conversation always
+  // landed at the top, with the newest answer and its cards below the
+  // fold, which is the same symptom the streaming fix above addresses
+  // by a different route.
+  //
+  // Rendering first and scrolling next frame keeps that order (no flash
+  // of the previous conversation) while letting the scroll run once the
+  // element actually has a height.
+  requestAnimationFrame(() => stick(true));
 }
 
 function welcome() {
@@ -1131,10 +1142,38 @@ async function send() {
   }
   function appendToken(t) {
     if (!bubble) { clearScaffolding(); bubble = add("", "msg bot writing"); firstToken = performance.now() - t0; }
+    // MEASURED BEFORE THE TEXT GROWS, and that is the whole bug.
+    //
+    // This used to append and then call stick(), which asks atBottom()
+    // AFTER the height has already jumped. Tokens do not arrive one
+    // character at a time - they arrive in chunks, and the first chunk
+    // taller than atBottom()'s 90px slack makes the answer look like
+    // something the reader had scrolled away from. stick() then declines
+    // to scroll, correctly by its own rule, and never recovers for the
+    // rest of the turn.
+    //
+    // Measured on a real answer: scrollTop stayed at 0 from the first
+    // chunk to the last, so the eight product cards appended below
+    // landed 800px out of view and read as missing entirely.
+    const following = atBottom();
     bubble.textContent += t;
-    stick();
+    if (following) stick(true);
   }
   function finish(reply) {
+    // ASKED BEFORE ANYTHING MOVES, and that order is the whole fix.
+    //
+    // finish() replaces the streamed text with the authoritative reply,
+    // which changes the bubble's height and can push the view off the
+    // bottom. productCards() then appends BELOW that and calls stick(),
+    // which - correctly, by its own rule - sees atBottom() is false and
+    // declines to scroll. The cards land out of sight every time the
+    // answer is long enough to matter, and a reader who does not think
+    // to scroll concludes there are no cards at all. Measured: eight
+    // cards rendered, none visible.
+    //
+    // So the question is whether the reader was FOLLOWING, and it has to
+    // be asked before the height changes rather than after.
+    const following = atBottom();
     clearScaffolding();
     // `done` carries the authoritative reply. Usually identical to what
     // the tokens drew - but the fallbacks (rate limited, provider down)
@@ -1162,6 +1201,11 @@ async function send() {
     thread.messages.push({role: "bot", text: bubble.textContent, products, attribution, meta: {timing, checked: src}});
     thread.updatedAt = Date.now();
     upsertThread();
+
+    // Only for a reader who was already following. Someone who scrolled
+    // up to re-read mid-answer is not dragged back down - that is the
+    // rule stick() exists to protect, and this does not weaken it.
+    if (following) stick(true);
   }
   function fail(message) {
     clearScaffolding();
