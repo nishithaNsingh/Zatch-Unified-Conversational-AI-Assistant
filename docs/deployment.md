@@ -89,7 +89,8 @@ logs.
 
 ```json
 {"status": "ok", "database": {"status": "connected"},
- "llm": {"status": "warning", "redundant": false}}
+ "llm": {"status": "warning", "redundant": false},
+ "embeddings": {"status": "ok", "contaminated": 0}}
 ```
 
 | `llm.status` | Meaning | Should it page anyone |
@@ -97,6 +98,17 @@ logs.
 | `ok` | Two or more usable providers | No |
 | `warning` | One provider, or the Azure credit is within 14 days | No — it answers every request today |
 | `unavailable` | Credit expired, or no provider can serve this data | Yes — this also sets `status: degraded` |
+
+| `embeddings.status` | Meaning | Should it page anyone |
+|---|---|---|
+| `ok` | Every vector matches the index width and the model tag | No |
+| `warning` | Some vectors do not — those products have left semantic search | Not urgently, but fix it: run `scripts/check_embeddings.py` for the ids |
+| `unavailable` | No usable vectors at all — free-text search is dead | Yes — this also sets `status: degraded` |
+| `unknown` | The integrity read itself failed | No — liveness does not depend on it |
+
+`contaminated` is a COUNT and never the ids: `/health` is
+unauthenticated, so how much is wrong is a liveness signal while which
+products are affected is not. The ids go to the logs and to the script.
 
 Only `unavailable` degrades the overall status, so an orchestrator
 restarting on `status != ok` reacts to real outages and not to the
@@ -119,10 +131,21 @@ match the main backend's signing secret exactly.
 |---|---|
 | `POST /chat` | JSON in, JSON out. The original contract, unchanged. |
 | `POST /chat/stream` | Server-Sent Events: `status`, `token`, `done`, `error`. |
+| `DELETE /chat/session/{session_id}` | 204. Deletes that conversation from the server. Idempotent — clearing one that never existed is also 204. |
 
-Both take `{"message": "...", "session_id": "..."}` with
-`Authorization: Bearer <jwt>`, and both are behind the same auth and
-rate limit. Adopt streaming whenever the client is ready — the
+The two `POST`s take `{"message": "...", "session_id": "..."}` with
+`Authorization: Bearer <jwt>`, and all three are behind the same auth
+and rate limit.
+
+**History now lives for 24 hours**, up from 30 minutes. Two things
+follow. Redis holds roughly 48x more at any moment, so if the Upstash
+free tier gets tight, `session_store.SESSION_TIMEOUT_MINUTES` is the
+first dial to turn. And that history contains real order ids, tracking
+numbers and delivery cities — so the mobile app should offer the same
+"clear chat" affordance `/demo` does, and call `DELETE /chat/session/{id}`
+rather than simply dropping its local copy. The limiter counts that
+route like any other, so a client that has exhausted its allowance gets
+a 429 and should surface it rather than clearing its own view. Adopt streaming whenever the client is ready — the
 non-streaming endpoint is not deprecated and runs the identical loop.
 
 **Set `DEMO_UI_ENABLED=false`.** The `/demo` chat page defaults to on so
@@ -133,6 +156,14 @@ without a valid Zatch token, so this is an unnecessary door rather than
 a leak — but it is a door nobody remembers mounting. Startup logs
 `demo_ui_enabled` or `demo_ui_disabled` every time, so it is never a
 guess.
+
+**Making the product/Bit cards navigate.** Answers carry `products` and
+`bits` arrays of `(id, name)` rows; the demo page renders them as
+tappable rows that show placeholder text, because a web page has nowhere
+to send you. The app needs one tap handler per type, pushing its
+existing product screen or Bit player with the id. The exact payloads,
+the guarantees and the edge cases are in
+[app-integration.md](app-integration.md).
 
 **There is no CORS middleware, and that is correct for a native app.**
 CORS is a browser rule; a native client is unaffected, and the `/demo`
@@ -147,8 +178,13 @@ request carries a bearer token.
 
 - `scripts/check_azure.py` — provider chain, and days of credit left
 - `scripts/check_redis.py` — proves a real write/read round trip
+- `scripts/check_embeddings.py` — every vector against the index width
+  and the model tag, naming any that do not match. Worth running after
+  anyone edits a product: Zatch's own re-embed pipeline still writes
+  384-dim vectors, and an affected product silently leaves semantic
+  search
 - `uv run pytest` — the full suite, from a machine whose IP Atlas allows
 
-CI runs the 274 tests that need no database (`-m "not needs_db"`) plus
+CI runs the 411 tests that need no database (`-m "not needs_db"`) plus
 a container build. It cannot run the rest: Atlas allow-lists IPs and
 GitHub runners have none. Run the full suite locally before a release.

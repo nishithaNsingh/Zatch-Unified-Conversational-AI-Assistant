@@ -59,6 +59,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from app.config.settings import get_settings
+from app.memory.session_store import SESSION_TIMEOUT_MINUTES
 from app.db.connection import get_database
 from app.security.auth import create_test_token
 
@@ -122,7 +123,21 @@ PAGE = r"""
   /* ---- the phone ---- */
   .device {
     position:relative; z-index:1;
-    width:100%; max-width:430px; height:min(880px, calc(100dvh - 48px));
+    /* 400px - the width a chat widget actually is. Intercom and Drift
+       sit around 380; 430 read as a browser window rather than a
+       widget, which is the wrong thing for a surface whose whole point
+       is that it looks like the thing shipping inside the phone app.
+       HEIGHT IS UNTOUCHED, and so is everything inside: bubbles are
+       max-width:85%, rows and the composer are flex, so the column
+       narrows and nothing needs re-tuning.
+       NOT BELOW ~380: the composer is a 44px send button beside a text
+       field, and product cards carry a 46px thumbnail with a name and
+       two prices next to it. Under about 360 those start wrapping.
+       The 520px breakpoint below is a different thing and stays where
+       it is - that is the point where a REAL phone drops the frame and
+       goes edge to edge, which is correct and has nothing to do with
+       how wide the frame is on a desktop. */
+    width:100%; max-width:400px; height:min(880px, calc(100dvh - 48px));
     background:var(--frame); border:1px solid var(--line); border-radius:38px;
     box-shadow:
       0 0 0 1px rgba(255,255,255,.03) inset,
@@ -206,7 +221,7 @@ PAGE = r"""
   .split-key i { width:8px; height:8px; border-radius:2px; flex:none; }
   .split-key b { color:var(--text); font-weight:600; font-variant-numeric:tabular-nums; }
 
-  /* ---- rows (accounts and threads share this) ---- */
+  /* ---- rows (the account picker) ---- */
   .rows { display:flex; flex-direction:column; gap:7px; }
   .row {
     display:flex; align-items:center; gap:11px; text-align:left; width:100%;
@@ -233,11 +248,6 @@ PAGE = r"""
   .row .nm span { font-size:11px; color:var(--muted);
                   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .row .go { color:var(--faint); font-size:15px; flex:none; }
-  .row .kill {
-    background:transparent; border:0; color:var(--faint); cursor:pointer;
-    font-size:15px; padding:4px 6px; border-radius:7px; flex:none; line-height:1;
-  }
-  .row .kill:hover { color:var(--danger); background:rgba(255,107,122,.1); }
   .row.thin { padding:8px 11px; border-radius:11px; }
   .row.thin .av { width:26px; height:26px; border-radius:9px; font-size:12px; }
   .row.thin .nm b { font-size:13px; font-weight:550; }
@@ -402,7 +412,6 @@ PAGE = r"""
   .send:disabled { opacity:.35; cursor:default; }
   .send.stop { background:var(--surface-2); border:1px solid var(--line); color:var(--danger); }
 
-  .empty { text-align:center; color:var(--faint); font-size:12.5px; padding:26px 10px; line-height:1.7; }
 
   @media (max-width:520px) {
     body { padding:0; align-items:stretch; }
@@ -423,6 +432,7 @@ PAGE = r"""
       <span><i class="live" id="live"></i><span id="barSub">not connected</span></span>
     </div>
     <div class="bar-actions">
+      <button class="icon-btn" id="clearBtn" onclick="clearChat()" hidden>Clear</button>
       <button class="icon-btn" id="newBtn" onclick="newThread()" hidden>New</button>
     </div>
   </div>
@@ -453,22 +463,7 @@ PAGE = r"""
     </div></div>
   </div>
 
-  <!-- 2. conversations -->
-  <div class="screen" id="screenThreads" hidden>
-    <div class="scroll"><div class="pad">
-      <h2 class="title">Conversations</h2>
-      <p class="lede" id="threadsLede"></p>
-      <div class="rows" id="threadRows"></div>
-      <div class="empty" id="threadEmpty" hidden>
-        No conversations yet.<br>Start one and it will be saved here.
-      </div>
-    </div></div>
-    <div class="composer">
-      <button class="primary" style="flex:1" onclick="newThread()">New conversation</button>
-    </div>
-  </div>
-
-  <!-- 3. chat -->
+  <!-- 2. chat -->
   <div class="screen" id="screenChat" hidden style="position:relative">
     <div class="scroll" id="logScroll"><div id="log"></div></div>
     <button class="jump" id="jumpBtn" onclick="stick(true)" hidden>Jump to latest &darr;</button>
@@ -485,15 +480,53 @@ let token = "", account = "", thread = null, busy = false, controller = null;
 
 // THE ACCOUNT HALF. These lean on the signed-in user's own records, so
 // they work against any dataset and cannot miss.
+/* THE FOUR OPENING QUESTIONS.
+
+   One per intent a shopper actually arrives with - where is my order,
+   what is worth looking at, what is cheap right now, what have I got
+   waiting. Four covers the ground without becoming a menu to read.
+
+   EVERY ONE WAS DRIVEN AGAINST REAL DATA BEFORE IT WAS PUT HERE, because
+   a starter that misses makes "I couldn't find that" the product's
+   opening line. Each calls exactly one tool and answers from it:
+
+     Where is my order?         get_order_history      3/3 runs
+     Show me trending products  get_trending_products  3/3 runs
+     What should I buy?         get_recommendations    3/3 runs
+     What's in my cart?         get_cart               3/3 runs
+
+   THERE IS NO "DEALS" STARTER, AND THAT IS A GAP IN THE TOOLS RATHER
+   THAN A CHOICE. Four phrasings of it were tried and measured:
+
+     "Do you have any offers?"      0/1 - asked which kind of offer
+     "Any discounts right now?"     1 then 0/3 - intermittent
+     "Show me discounted products"  2/3
+     "Which products are on sale?"  0/3
+
+   Nothing lists discounts. get_trending_products happens to carry
+   was/now prices, so a phrasing naming PRODUCTS sometimes lands there
+   by luck, and "discounts", "offers" and "sale" as concepts land
+   nowhere - this app spreads them across coupons, bargains and prices
+   with no tool over any of it. An INTERMITTENT starter is worse than a
+   missing one: it passes the spot check and fails the shopper. Closing
+   this properly means a get_discounted_products tool (see
+   .claude/skills/add-a-tool), not a cleverer sentence.
+
+     "Track my delivery" was dropped for a different reason: it worked,
+     but ran get_order_history and produced the same list as "Where is
+     my order?" - two of four slots spending themselves on one answer.
+     Tracking is a follow-up to that list, not a separate way in.
+
+   FIXED, NOT GENERATED. These used to be built per-account from the
+   catalogue, which named real products and cost several queries per
+   sign-in. None of these four names a product, so none of them can go
+   stale when the catalogue changes. */
 const STARTERS = [
   "Where is my order?",
+  "Show me trending products",
+  "What should I buy?",
   "What's in my cart?",
-  "What's trending right now?",
 ];
-// THE CATALOGUE HALF, filled from /demo/stats at page load with real
-// product names. Empty if that call fails - the chips are a
-// convenience, not a dependency.
-let CATALOGUE_STARTERS = [];
 
 // WHAT THE "CHECKED" LINE CALLS EACH SOURCE. The status events carry a
 // gerund ("Looking up your orders"), which is right while it happens and
@@ -566,7 +599,7 @@ let screen = "accounts";
 
 function showScreen(name) {
   screen = name;
-  ["Accounts", "Threads", "Chat"].forEach(s => {
+  ["Accounts", "Chat"].forEach(s => {
     $("screen" + s).hidden = (s.toLowerCase() !== name);
   });
   $("backBtn").hidden = (name === "accounts");
@@ -574,25 +607,31 @@ function showScreen(name) {
 
   if (name === "accounts") {
     $("barTitle").textContent = "Zatch Assistant";
+    $("clearBtn").hidden = true;
     $("barSub").textContent = account ? "signed out" : "not connected";
-  } else if (name === "threads") {
-    $("barTitle").textContent = account;
-    $("barSub").textContent = "conversations";
-    renderThreads();
   } else {
     $("barTitle").textContent = thread ? thread.title : account;
+    $("clearBtn").hidden = false;
     $("barSub").textContent = account;
     setTimeout(() => stick(true), 0);
   }
 }
 
 function goBack() {
-  // Leaving a chat mid-answer must not leave the request running.
-  if (screen === "chat") { abort(); showScreen("threads"); }
-  else if (screen === "threads") signOut();
+  // ONE STEP NOW, not two. The conversations list used to sit between
+  // the chat and the picker; without it, back from a chat is back to
+  // signed-out. Leaving mid-answer must still not leave the request
+  // running.
+  if (screen === "chat") { abort(); signOut(); }
 }
 
 function signOut() {
+  // THREADS IS CLEARED, THE SAVED COPY IS NOT. Signing out is not
+  // "delete my history" - that is what Clear is for - but the next
+  // account to sign in on this page must not inherit the last one's
+  // list in memory. hydrateThreads would overwrite it anyway; not
+  // relying on that is cheaper than relying on it.
+  THREADS = [];
   token = ""; account = ""; thread = null;
   $("live").classList.remove("on");
   showScreen("accounts");
@@ -600,106 +639,230 @@ function signOut() {
 
 /* ---------- thread storage ----------
    The SERVER owns what the model remembers, keyed by session id. This
-   owns what the screen shows, keyed by the same id - so resuming a
-   thread gives the model its context back and the reader their
+   owns what the screen shows, keyed by the same id - so switching
+   threads gives the model its context back and the reader their
    transcript, without a new endpoint to fetch history.
 
-   localStorage can throw outright (private windows, blocked site data),
-   so every access is wrapped: losing saved threads degrades the demo,
-   it must never break it. */
+   IT DEPENDS ON WHO IS SIGNED IN, and the split is deliberate.
+
+   A NAMED ACCOUNT (picked from the list) KEEPS ITS HISTORY. Signing in
+   as a person is a statement that this device is theirs, and a shopper
+   who reloads mid-conversation should not lose it. Threads are mirrored
+   to localStorage under that account's own key.
+
+   THE PASTED-TOKEN PATH DOES NOT. There is no identity behind a raw
+   JWT - it is a credential someone is holding, often on a machine that
+   is not theirs - so nothing is written to disk and the visit ends with
+   the tab.
+
+   WHAT PERSISTENCE COSTS, because this surface reads REAL customers:
+   a saved transcript is somebody's actual order history sitting in
+   localStorage on whatever machine ran the demo. Two things bound it -
+   it is scoped to the account that created it, and it expires with the
+   SERVER's session (see pruneStale), so it cannot outlive the memory it
+   describes. It is still on disk until then. Sign in as a named account
+   only on a machine you would trust with that.
+
+   Every access is wrapped: localStorage throws outright in private
+   windows and wherever site data is blocked, and losing saved threads
+   must degrade the demo rather than break it. */
+let THREADS = [];
+
+// The account name the pasted-token path uses. Not a person, so not
+// somebody whose history we are entitled to keep.
+const GUEST_ACCOUNT = "token";
+
+// Filled from /demo/stats. The fallback matters only if that call
+// failed, and errs SHORT - dropping a transcript early is a smaller
+// wrong than showing one the server has forgotten.
+let SESSION_TTL_MINUTES = 30;
+
+function isGuest() { return !account || account === GUEST_ACCOUNT; }
 function key() { return "zatch.threads." + account; }
 
-function loadThreads() {
-  try { return JSON.parse(localStorage.getItem(key())) || []; }
-  catch (e) { return []; }
-}
-function saveThreads(list) {
-  try { localStorage.setItem(key(), JSON.stringify(list)); } catch (e) {}
-}
-function upsertThread() {
-  if (!thread) return;
-  const list = loadThreads().filter(t => t.id !== thread.id);
-  list.unshift(thread);
-  saveThreads(list.slice(0, 30));
+/* Drops anything the server will already have forgotten.
+
+   The client and the server hold two halves of one conversation, and
+   only the server's half expires on its own. Without this, a transcript
+   saved today is still on screen next week while the session behind it
+   lapsed after a day - the reader sees their history, asks a follow-up
+   about it, and the model has no idea what they mean. Expiring both on
+   the same clock keeps the screen honest about what can still be
+   referred to. */
+function pruneStale(list) {
+  const cutoff = Date.now() - SESSION_TTL_MINUTES * 60 * 1000;
+  return list.filter(t => (t.updatedAt || 0) > cutoff);
 }
 
-function newThread() {
+// Called once per sign-in, never per render: reading and parsing the
+// whole list on every keystroke would be silly, and THREADS is the
+// single source of truth once it is loaded.
+function hydrateThreads() {
+  if (isGuest()) { THREADS = []; return; }
+  let saved = [];
+  try { saved = JSON.parse(localStorage.getItem(key())) || []; } catch (e) {}
+  THREADS = pruneStale(Array.isArray(saved) ? saved : []);
+  if (THREADS.length !== saved.length) saveThreads(THREADS);
+}
+
+function loadThreads() {
+  return THREADS;
+}
+function saveThreads(list) {
+  // In memory ALWAYS, so a guest's list still works within the visit.
+  THREADS = list;
+  if (isGuest()) return;
+  try { localStorage.setItem(key(), JSON.stringify(list)); } catch (e) {}
+}
+/* ONE CONVERSATION PER ACCOUNT, and that follows from the list being
+   gone rather than being a separate decision.
+
+   This used to keep up to 30 threads, which was right while a screen
+   existed to reach them. Without it, a second thread is unreachable the
+   moment a third is started - so keeping them would leave somebody's
+   real order history saved on disk with no way to open it, review it or
+   delete it. Storage nobody can see is storage nobody can clear.
+
+   So the saved list holds exactly the current conversation. Everything
+   that reads it still works unchanged, because it is still a list. */
+function upsertThread() {
+  if (!thread) return;
+  saveThreads([thread]);
+}
+
+/* Starts a fresh conversation, and ends the one it replaces.
+
+   THE SERVER DELETE IS WHY THIS IS ASYNC. With no list to reopen it
+   from, the previous conversation becomes unreachable the instant this
+   runs - and its session would otherwise sit in Redis for the rest of
+   the 24-hour TTL, holding real orders that no screen can show and no
+   button can clear. Replacing it on screen and leaving it on the server
+   is exactly the mismatch the Clear button was added to avoid.
+
+   IT DOES NOT BLOCK ON THAT DELETE, and the asymmetry with clearChat is
+   deliberate. There, the user asked for the data to be gone, so a
+   failure must stop and say so. Here they asked for a new conversation:
+   failing to tidy the old one is worth logging and worth nothing else -
+   it still expires on its own, and refusing to open a fresh chat would
+   be a strange way to report it. */
+async function newThread() {
+  const previous = thread;
+  if (previous && token) {
+    fetch("/chat/session/" + encodeURIComponent(previous.id), {
+      method: "DELETE",
+      headers: {Authorization: "Bearer " + token},
+    }).catch(() => {});
+  }
   thread = {
     // The session id IS the thread id, so the server's memory and this
     // transcript stay in step by construction.
-    id: "demo-" + Math.random().toString(36).slice(2, 8),
+    //
+    // THE TIMESTAMP IS NOT DECORATION. Six base36 characters collide
+    // rarely but not never, and a collision resolves to a session key
+    // scoped by the SAME user - so the one thing it could resurrect is
+    // this account's own previous conversation, which is exactly what a
+    // fresh start is supposed to rule out. Prefixing the clock makes a
+    // repeat impossible within a browser rather than merely unlikely.
+    id: "demo-" + Date.now().toString(36) + "-"
+        + Math.random().toString(36).slice(2, 8),
     title: "New conversation",
     updatedAt: Date.now(),
     messages: [],
   };
+  // SAVED IMMEDIATELY, EMPTY, and this is not tidiness. upsertThread
+  // otherwise runs only after a message is sent, so between pressing
+  // New and typing anything the stored copy still described the
+  // conversation this one replaced - whose server session was deleted
+  // two lines ago. A reload in that window restored a transcript the
+  // model had already forgotten, which is precisely the mismatch
+  // pruneStale exists to prevent, arriving by a different route.
+  upsertThread();
   renderChat();
   showScreen("chat");
   $("q").focus();
 }
 
-function openThread(id) {
-  const found = loadThreads().find(t => t.id === id);
-  if (!found) return;
-  thread = found;
+/* Ends this conversation on BOTH sides.
+
+   THE SERVER GOES FIRST, AND THE UI ONLY FOLLOWS IF IT SUCCEEDED. That
+   order is the whole correctness of this button. Wiping the transcript
+   first would show an empty screen while the model still had every turn
+   in Redis - so the next question would be answered with context the
+   user believes they deleted, which is worse than not offering the
+   button at all.
+
+   A failure therefore leaves everything exactly as it was and says so.
+   The likely causes are a 429 (the limiter counts this route like any
+   other) and a dropped connection; neither is a reason to lie about
+   what was deleted.
+
+   THE SESSION ID IS KEPT rather than rotated. The server copy is gone,
+   so reusing the id starts from nothing - and "clear this conversation"
+   is what the button says, where a new id would be "start another one",
+   which the New button already does. */
+async function clearChat() {
+  if (!thread || busy) return;
+
+  const btn = $("clearBtn");
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Clearing…";
+  try {
+    const res = await fetch("/chat/session/" + encodeURIComponent(thread.id), {
+      method: "DELETE",
+      headers: {Authorization: "Bearer " + token},
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = label;
+    // Reported in the transcript rather than an alert, so it sits with
+    // the messages it failed to remove.
+    add("Couldn't clear the conversation - it is still on the server. "
+        + "Try again in a moment.", "msg err");
+    return;
+  }
+
+  btn.disabled = false;
+  btn.textContent = label;
+  thread.messages = [];
+  thread.title = "New conversation";
+  thread.updatedAt = Date.now();
+  upsertThread();
+  $("barTitle").textContent = thread.title;
+  // Redraws the greeting and the starter chips, exactly as a fresh
+  // conversation does - the greeting is rendered rather than stored, so
+  // clearing the messages cannot remove it.
   renderChat();
-  showScreen("chat");
+  $("q").focus();
 }
 
-function deleteThread(id, ev) {
-  ev.stopPropagation();
-  saveThreads(loadThreads().filter(t => t.id !== id));
-  if (thread && thread.id === id) thread = null;
-  renderThreads();
-}
-
-function renderThreads() {
-  const list = loadThreads();
-  const box = $("threadRows");
-  box.innerHTML = "";
-  $("threadEmpty").hidden = list.length > 0;
-  $("threadsLede").textContent = list.length
-    ? "Signed in as " + account + ". Pick up where you left off, or start a new one."
-    : "Signed in as " + account + ".";
-
-  list.forEach(t => {
-    const row = document.createElement("button");
-    row.className = "row";
-    const av = document.createElement("div");
-    av.className = "av quiet";
-    av.textContent = "\u{1F4AC}";
-    const nm = document.createElement("div");
-    nm.className = "nm";
-    const b = document.createElement("b");
-    b.textContent = t.title;
-    const s = document.createElement("span");
-    const turns = t.messages.filter(m => m.role === "user").length;
-    s.textContent = turns + (turns === 1 ? " question" : " questions") + " · " + ago(t.updatedAt);
-    nm.append(b, s);
-    const kill = document.createElement("button");
-    kill.className = "kill";
-    kill.textContent = "×";
-    kill.title = "Delete conversation";
-    kill.onclick = (e) => deleteThread(t.id, e);
-    row.append(av, nm, kill);
-    row.onclick = () => openThread(t.id);
-    box.appendChild(row);
-  });
-}
-
-function ago(ts) {
-  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
-  if (s < 60) return "just now";
-  const m = Math.round(s / 60);
-  if (m < 60) return m + "m ago";
-  const h = Math.round(m / 60);
-  if (h < 24) return h + "h ago";
-  return Math.round(h / 24) + "d ago";
-}
 
 /* ---------- rendering ---------- */
+/* The first thing anyone sees, before they have typed a word.
+
+   RENDERED, NEVER STORED, and that distinction is the whole reason this
+   is safe. It is not pushed into thread.messages, so it is never sent to
+   /chat, never written into the server's session store, and never part
+   of the history the model reads. The scope rule and the grounding
+   checks judge model OUTPUT; this text is neither produced by the model
+   nor seen by it.
+
+   The alternative - seeding the conversation with an assistant turn -
+   would put a sentence in the transcript that no lookup vouches for and
+   that the scope guard never inspected, and would hand the model an
+   opening turn it did not write. This costs nothing and risks nothing.
+
+   Drawn on every render rather than once, so it survives switching
+   threads and stays where a greeting belongs: at the top. */
+function greeting() {
+  add("Hi! Welcome to Zatch \u{1F44B} How can I help you today?", "msg bot");
+}
+
 function renderChat() {
   const log = $("log");
   log.innerHTML = "";
+  greeting();
   if (!thread || !thread.messages.length) { welcome(); return; }
   thread.messages.forEach(m => {
     if (m.role === "user") add(m.text, "msg user");
@@ -710,6 +873,7 @@ function renderChat() {
         renderAttributed(bubble, m.text, m.attribution);
       }
       if (m.products) productCards(m.products);
+      if (m.bits) bitCards(m.bits);
       if (m.meta) metaLine(m.meta.timing, m.meta.checked);
     }
   });
@@ -731,16 +895,18 @@ function welcome() {
   const w = document.createElement("div");
   w.className = "welcome";
   const h = document.createElement("h3");
-  h.textContent = "Ask me about your Zatch account";
-  const p = document.createElement("p");
-  p.textContent = "Orders and delivery, the catalogue, bargaining, live sessions and Bits. I read your real data — and I'll say so when I can't find something.";
+  // NOT a second greeting - the bubble above already said hello. This
+  // heading now does the other half of the job: saying what is worth
+  // asking about, which a "hi" cannot.
+  h.textContent = "Here's what I can look up";
   const chips = document.createElement("div");
   chips.className = "chips";
-  // Catalogue questions first: the strongest thing the assistant does,
-  // and the ones nobody could have guessed unaided.
-  CATALOGUE_STARTERS.forEach(s => chips.appendChild(chip(s, true)));
+  // NO PROSE BETWEEN THE HEADING AND THE CHIPS. A sentence listing the
+  // feature areas said what the four questions below already show, and
+  // an opening screen that has to be read before it can be used is one
+  // more thing between a shopper and their first answer.
   STARTERS.forEach(s => chips.appendChild(chip(s, false)));
-  w.append(h, p, chips);
+  w.append(h, chips);
   $("log").appendChild(w);
 }
 
@@ -830,6 +996,58 @@ function productCards(products) {
     detail.textContent = "Opens this product in the Zatch app.";
 
     body.append(nm, pr);
+    row.appendChild(body);
+    card.append(row, detail);
+    card.onclick = () => card.classList.toggle("open");
+    wrap.appendChild(card);
+  });
+
+  $("log").appendChild(wrap);
+  stick();
+  return wrap;
+}
+
+/* THE SAME COMPONENT, FOR BITS.
+
+   Deliberately the same .card element, the same .cards wrapper and the
+   same tap-to-reveal behaviour as productCards above - a Bit row should
+   not look like a different app from a product row.
+
+   WHAT IT DOES NOT DRAW is the point of the change. A Bit used to arrive
+   as a line of prose reading "Italian pants - 1.2k views, 340 likes";
+   the counts are no longer sent to the model at all, and the row carries
+   the title alone. No price element, because a video has no price and an
+   empty one would read as a missing value rather than an absent concept.
+
+   The id never reaches the text: like a product card, the client is
+   handed (bit_id, title) lifted straight from the tool result and routes
+   on the id itself. */
+function bitCards(bits) {
+  if (!bits || !bits.length) return null;
+  const wrap = document.createElement("div");
+  wrap.className = "cards";
+
+  bits.forEach(b => {
+    const card = document.createElement("button");
+    card.className = "card";
+    card.type = "button";
+
+    const row = document.createElement("div");
+    row.className = "row";
+
+    const body = document.createElement("div");
+    body.className = "body";
+    const nm = document.createElement("div");
+    nm.className = "nm";
+    // textContent, never innerHTML: a Bit title is written by whoever
+    // uploaded the video.
+    nm.textContent = b.title || "Untitled Bit";
+    body.appendChild(nm);
+
+    const detail = document.createElement("div");
+    detail.className = "detail";
+    detail.textContent = "Opens this Bit in the Zatch app.";
+
     row.appendChild(body);
     card.append(row, detail);
     card.onclick = () => card.classList.toggle("open");
@@ -1051,11 +1269,6 @@ async function signIn(username, row) {
     }
     token = body.token;
     account = body.username || username;
-    // Per-account questions, naming this person own orders. Falls back
-    // to the shared catalogue picks server-side, so this is never empty.
-    if (Array.isArray(body.suggestions) && body.suggestions.length) {
-      CATALOGUE_STARTERS = body.suggestions;
-    }
     $("live").classList.add("on");
     enter();
   } catch (e) {
@@ -1075,12 +1288,29 @@ function startWithToken() {
   enter();
 }
 
-// Straight into the last conversation if there is one - a returning
-// demo should not make you click through a list you have already seen.
+// WHERE A SIGN-IN LANDS, and it is not the same for everyone.
+//
+// A NAMED ACCOUNT resumes its most recent conversation, because that is
+// what "do not wipe my history" means in practice - a reload should put
+// the reader back where they were, not make them dig through a list.
+//
+// A GUEST always starts clean. hydrateThreads left THREADS empty for
+// them, so this falls through to newThread without a special case.
+//
+// The greeting is drawn either way: renderChat draws it before the
+// messages, so a resumed conversation opens with it exactly as a new
+// one does.
 function enter() {
+  hydrateThreads();
   const list = loadThreads();
-  if (list.length) { thread = list[0]; renderChat(); showScreen("chat"); $("q").focus(); }
-  else newThread();
+  if (list.length) {
+    thread = list[0];
+    renderChat();
+    showScreen("chat");
+    $("q").focus();
+  } else {
+    newThread();
+  }
 }
 
 /* ---------- sending ---------- */
@@ -1106,6 +1336,9 @@ async function send() {
   if (!text) return;
   if (!thread) newThread();
 
+  // The starter CHIPS go once a question has been asked - they are a
+  // prompt to begin, and beginning is done. The greeting bubble stays:
+  // it is part of the transcript now, the way it is in every chat app.
   const w = $("log").querySelector(".welcome");
   if (w) w.remove();
   box.value = "";
@@ -1123,6 +1356,7 @@ async function send() {
   let status = null, bubble = null, firstToken = null;
   const checked = [];
   let products = [];
+  let bits = [];
   let attribution = [];
   const t0 = performance.now();
 
@@ -1191,6 +1425,7 @@ async function send() {
     // Between the answer and its meta line, so the "checked" footnote
     // still reads as the last word on the turn.
     productCards(products);
+    bitCards(bits);
 
     const ms = performance.now() - t0;
     const timing = firstToken
@@ -1198,7 +1433,7 @@ async function send() {
       : (ms / 1000).toFixed(1) + "s";
     const src = checked.join(" · ");
     metaLine(timing, src, bubble.textContent);
-    thread.messages.push({role: "bot", text: bubble.textContent, products, attribution, meta: {timing, checked: src}});
+    thread.messages.push({role: "bot", text: bubble.textContent, products, bits, attribution, meta: {timing, checked: src}});
     thread.updatedAt = Date.now();
     upsertThread();
 
@@ -1258,6 +1493,7 @@ async function send() {
         }
         else if (name === "token") appendToken(payload.text);
         else if (name === "products") products = payload.products || [];
+        else if (name === "bits") bits = payload.bits || [];
         else if (name === "attribution") attribution = payload.claims || [];
         else if (name === "done")  finish(payload.reply);
         else if (name === "error") { fail(payload.message); return; }
@@ -1291,7 +1527,7 @@ async function loadScope() {
   try {
     const s = await fetch("/demo/stats", {headers: codeHeaders()}).then(r => r.ok ? r.json() : null);
     if (!s) return;
-    if (Array.isArray(s.suggestions)) CATALOGUE_STARTERS = s.suggestions;
+    if (s.session && s.session.ttl_minutes) SESSION_TTL_MINUTES = s.session.ttl_minutes;
     const box = $("scope");
     box.appendChild(tileGroup("Catalogue", s.catalogue));
     box.appendChild(tileGroup("Activity", s.activity));
@@ -1577,7 +1813,6 @@ async def demo_stats(x_demo_code: str | None = Header(default=None)):
     buyers = len(await db["orders"].distinct("buyerId"))
 
     return {
-        "suggestions": await _catalogue_questions(db),
         # The catalogue side - what any question about products reaches.
         "catalogue": [
             {"label": "products", "value": products},
@@ -1595,6 +1830,14 @@ async def demo_stats(x_demo_code: str | None = Header(default=None)):
         # Part-to-whole, and the only thing here drawn rather than
         # printed - see the accounts bar in the page.
         "accounts": {"total": users, "buyers": buyers, "never_ordered": users - buyers},
+        # HOW LONG THE SERVER REMEMBERS, sent so the page does not have
+        # to guess. A saved transcript that outlives the session behind
+        # it shows the reader a conversation the model has forgotten -
+        # they scroll up, see it, ask "what about the second one", and
+        # get "which one?". Reading the real number means the two
+        # expire together instead of drifting apart the first time
+        # anybody changes one of them.
+        "session": {"ttl_minutes": SESSION_TIMEOUT_MINUTES},
     }
 
 
@@ -1867,10 +2110,15 @@ async def demo_token(request: DemoSignIn, x_demo_code: str | None = Header(defau
             user_id=str(user["_id"]), expires_in_minutes=TOKEN_MINUTES
         ),
         "username": user.get("username"),
-        # Built here rather than at page load, because only now do we
-        # know whose account this is - and the whole point of the chips
-        # is that they name this person's own orders.
-        "suggestions": await _questions_for_user(
-            db, user["_id"], await _catalogue_questions(db)
-        ),
+        # NO SUGGESTIONS ANY MORE. The page offers four fixed starters
+        # (see STARTERS) that name no product, so nothing here needs
+        # building per account - and building it cost roughly six
+        # queries on every single sign-in for a value nobody read.
+        #
+        # _questions_for_user and _catalogue_questions are left in place
+        # rather than deleted: they encode which coupons are actually
+        # valid today, which reviewed products still exist, and how the
+        # hashtags are stored, all of which was learned the hard way. If
+        # per-account starters are ever wanted again, the hard part is
+        # already written.
     }

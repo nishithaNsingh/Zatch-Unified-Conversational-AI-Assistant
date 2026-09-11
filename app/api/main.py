@@ -34,6 +34,7 @@ from app.config.logging import configure_logging
 from app.config.settings import get_settings
 from app.db.connection import close_mongo_connection, connect_to_mongo
 from app.db.redis_client import close_redis
+from app.repos.products_repo import log_embedding_preflight
 from app.security.auth import log_secret_preflight
 
 import structlog
@@ -86,6 +87,11 @@ async def lifespan(app: FastAPI):
         logger.info("demo_ui_disabled")
 
     await connect_to_mongo()
+    # AFTER the connection, unlike the other preflights - this one reads
+    # the database. It reports the dormant risk in HANDOFF.md: a rogue
+    # re-embed writes a 384-dim vector into a 1536-dim collection, and the
+    # affected product silently leaves every search.
+    await log_embedding_preflight()
     yield
     await close_mongo_connection()
     await close_llm_client()

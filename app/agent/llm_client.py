@@ -8,7 +8,7 @@ WHY THIS APPROACH:
     Two providers, one wire format. Groq and Google both expose an
     OpenAI-COMPATIBLE chat-completions endpoint, which means the same
     `messages` list, the same tool schemas, and the same response shape
-    work on either - verified against our real 34 schemas before this
+    work on either - verified against our real 35 schemas before this
     was written. That compatibility is what makes failover safe: the
     conversation history stored by Phase 8 is provider-neutral, so a
     request can switch providers mid-conversation without rewriting

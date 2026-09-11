@@ -36,7 +36,7 @@ import asyncio
 import json
 
 import structlog
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Path
 from fastapi.responses import StreamingResponse
 
 from app.agent.orchestrator import FALLBACK_GENERIC, run_conversation
@@ -64,15 +64,53 @@ async def chat(request: ChatRequest, user_id: str = Depends(rate_limited_user_id
     # as an SSE event.
     products: list = []
     attribution: list = []
+    bits: list = []
     reply, messages = await run_conversation(
         user_id, request.message, history=history,
         products_out=products, attribution_out=attribution,
+        bits_out=bits,
     )
     await session_store.save_session(user_id, request.session_id, messages)
     return ChatResponse(
         reply=reply, session_id=request.session_id,
-        products=products, attribution=attribution,
+        products=products, bits=bits, attribution=attribution,
     )
+
+
+@router.delete("/chat/session/{session_id}", status_code=204)
+async def clear_chat_session(
+    session_id: str = Path(..., min_length=1, max_length=200),
+    user_id: str = Depends(rate_limited_user_id),
+):
+    """Deletes one conversation from the server, for good.
+
+    WHY IT EXISTS. History expires on its own, but the TTL is now 24
+    hours (see session_store.SESSION_TIMEOUT_MINUTES) and that history
+    holds real order ids, tracking numbers and delivery cities. "Clear
+    my chat" should mean the data is gone, not that it stops being shown
+    while it sits in Redis for the rest of the day.
+
+    IT CAN ONLY EVER CLEAR THE CALLER'S OWN. The store is keyed by the
+    VERIFIED user_id together with the session_id, so a session_id
+    belonging to somebody else simply hashes to a key this user does not
+    own - the same property that stops one user reading another's
+    history. Nothing here needs to check ownership because nothing here
+    can express somebody else's session.
+
+    RATE LIMITED like every other route, per the note in
+    api/dependencies.rate_limited_user_id: endpoints depend on that
+    rather than on get_current_user_id so a new one cannot quietly skip
+    the limiter. The cost is that a user who has exhausted their
+    allowance cannot clear until the window rolls - an accepted
+    annoyance against an endpoint that cannot be added without the
+    limiter by accident.
+
+    204 AND NOT A BODY. Deleting a session that was never there is not
+    an error - the desired state is "this conversation does not exist",
+    and it does not.
+    """
+    await session_store.clear_session(user_id, session_id)
+    logger.info("chat_session_cleared", user_id=user_id, session_id=session_id)
 
 
 def _frame(event: dict) -> str:
@@ -92,6 +130,8 @@ async def chat_stream(
       status    {"tool": "...", "label": "Looking up your orders"}
       token     {"text": "..."} - fragments of the answer
       products  {"products": [{"product_id": "...", "name": "...", ...}]}
+      bits      {"bits": [{"bit_id": "...", "title": "..."}]} - same
+                contract as products, for short videos
       attribution {"claims": [{"start": 12, "end": 18, "text": "₹1,199",
                    "kind": "price", "tool": "get_order_history"}]}
       done      {"reply": "...", "session_id": "..."}

@@ -48,11 +48,14 @@ import re
 import structlog
 from pymongo.errors import OperationFailure
 
+from dataclasses import dataclass, field
+
 from app.agent.embeddings import (
     EmbeddingModelMismatch,
     EmbeddingUnavailable,
     embed_query,
     embedding_model_tag,
+    expected_dimensions,
 )
 from app.config.settings import get_settings
 from app.db.connection import get_database
@@ -475,6 +478,232 @@ async def find_similar_products(product_id: str, limit: int = 5) -> list[dict]:
     # $in does not preserve order, and here the order IS the relevance.
     return [by_id[pid] for pid in ranked_ids if pid in by_id]
 
+@dataclass(frozen=True)
+class EmbeddingAudit:
+    """The state of the vector collection, counted rather than sampled."""
+
+    total: int
+    expected_dimensions: int
+    expected_tag: str
+    ok: int
+    # THE TRUE TOTALS, kept apart from the samples below - and the
+    # separation is not tidiness. The lists are capped so a wholly broken
+    # collection does not print 143 ids, and reading their length as the
+    # count made the report say "20 wrong" when every document was. A
+    # number that under-reports the size of an incident is worse than no
+    # number, because it is believed.
+    wrong_width_count: int = 0
+    wrong_tag_count: int = 0
+    # A capped SAMPLE, for a human to start from.
+    wrong_width: list = field(default_factory=list)   # [{_id, width}]
+    wrong_tag: list = field(default_factory=list)     # [{_id, tag}]
+
+    @property
+    def truncated(self) -> bool:
+        """Whether the samples leave anything out."""
+        return (
+            self.wrong_width_count > len(self.wrong_width)
+            or self.wrong_tag_count > len(self.wrong_tag)
+        )
+
+    @property
+    def healthy(self) -> bool:
+        return (
+            self.total > 0
+            and not self.wrong_width_count
+            and not self.wrong_tag_count
+        )
+
+    @property
+    def level(self) -> str:
+        """ok | empty | degraded | broken - what a monitor should act on."""
+        if self.total == 0:
+            return "empty"
+        if self.healthy:
+            return "ok"
+        # EVERY document wrong is a different failure from SOME. All of
+        # them means the catalogue belongs to another model and search is
+        # meaningless; some of them means a rogue writer has been through
+        # and those products have silently left the index.
+        return "broken" if self.ok == 0 else "degraded"
+
+    @property
+    def summary(self) -> str:
+        if self.level == "empty":
+            return "no embeddings stored"
+        if self.healthy:
+            return f"{self.total} embeddings, all {self.expected_dimensions}-dim and tagged"
+        return (
+            f"{self.wrong_width_count} wrong-width and {self.wrong_tag_count} "
+            f"wrong-tag of {self.total} embeddings"
+        )
+
+
+async def audit_embeddings(limit_reported: int = 20) -> EmbeddingAudit:
+    """Every stored vector checked against the width and tag the index
+    expects. Read-only, and the only thing that can see the failure.
+
+    WHY A FULL SCAN RATHER THAN A SAMPLE. The failure mode is ONE
+    document: Zatch's own change-stream pipeline re-embeds a product
+    whenever a seller edits it, using the old 384-dim model and writing
+    no tag. Sampling finds that document with probability 1/143. A scan
+    finds it every time, and 143 vectors is a trivial read.
+
+    IT REPORTS, IT DOES NOT REPAIR. This service holds a READ-ONLY
+    credential by design - the same credential that once stopped an
+    irreversible delete_many during this project's own migration. Fixing
+    a poisoned vector means re-embedding it, which needs write access
+    and belongs to scripts/reembed_catalogue.py under a temporarily
+    granted role. Detection and repair are deliberately different
+    privileges.
+
+    THE PROJECTION IS HAND-WRITTEN, not the allowlist, and that is
+    consistent with the existing guard in search_products_semantically:
+    embeddingModel is an integrity field, read to check the collection
+    against itself. Nothing here is ever returned to a user, which is
+    what the allowlist governs.
+    """
+    db = get_database()
+    expected = expected_dimensions()
+    tag = embedding_model_tag()
+    assumed = get_settings().legacy_embedding_assumed
+
+    total = 0
+    ok = 0
+    wrong_width_count = 0
+    wrong_tag_count = 0
+    wrong_width: list = []
+    wrong_tag: list = []
+
+    cursor = db[EMBEDDINGS_COLLECTION].find(
+        {}, {"embedding": 1, "embeddingModel": 1}
+    )
+    async for doc in cursor:
+        total += 1
+        width = len(doc.get("embedding") or [])
+        stored = doc.get("embeddingModel")
+
+        # An operator assertion stands in for a missing tag, exactly as
+        # it does at search time - see LEGACY_EMBEDDING_ASSUMED. It only
+        # counts when it names the model actually configured.
+        effective = assumed if (stored is None and assumed) else stored
+
+        bad = False
+        if width != expected:
+            bad = True
+            wrong_width_count += 1
+            if len(wrong_width) < limit_reported:
+                wrong_width.append({"_id": str(doc.get("_id")), "width": width})
+        if effective != tag:
+            bad = True
+            wrong_tag_count += 1
+            if len(wrong_tag) < limit_reported:
+                wrong_tag.append({
+                    "_id": str(doc.get("_id")),
+                    "tag": stored or "(untagged)",
+                })
+        if not bad:
+            ok += 1
+
+    return EmbeddingAudit(
+        total=total, expected_dimensions=expected, expected_tag=tag, ok=ok,
+        wrong_width_count=wrong_width_count, wrong_tag_count=wrong_tag_count,
+        wrong_width=wrong_width, wrong_tag=wrong_tag,
+    )
+
+
+async def embedding_status() -> dict:
+    """The same question as audit_embeddings, answered with counts.
+
+    WHY BOTH EXIST. /health is polled - Render polls it, the container
+    HEALTHCHECK polls it - so it must not walk the collection on every
+    call. Three counted queries answer "is anything wrong" without
+    reading a single vector; the deep scan is for the moments a human is
+    actually looking, which are startup and the audit script.
+
+    $not/$size is what makes the width check countable: it asks Mongo for
+    documents whose embedding array is NOT the expected length, rather
+    than measuring each one here.
+    """
+    db = get_database()
+    expected = expected_dimensions()
+    tag = embedding_model_tag()
+
+    total = await db[EMBEDDINGS_COLLECTION].count_documents({})
+    if total == 0:
+        return {"level": "empty", "total": 0, "contaminated": 0}
+
+    wrong_width = await db[EMBEDDINGS_COLLECTION].count_documents(
+        {"embedding": {"$not": {"$size": expected}}}
+    )
+    wrong_tag = await db[EMBEDDINGS_COLLECTION].count_documents(
+        {"embeddingModel": {"$ne": tag}}
+    )
+
+    # An operator assertion covers a wholly untagged legacy catalogue,
+    # exactly as it does at search time.
+    assumed = get_settings().legacy_embedding_assumed
+    if wrong_tag == total and assumed == tag:
+        untagged = await db[EMBEDDINGS_COLLECTION].count_documents(
+            {"embeddingModel": {"$exists": False}}
+        )
+        if untagged == total:
+            wrong_tag = 0
+
+    contaminated = max(wrong_width, wrong_tag)
+    if contaminated == 0:
+        level = "ok"
+    elif contaminated >= total:
+        level = "broken"
+    else:
+        level = "degraded"
+    return {"level": level, "total": total, "contaminated": contaminated}
+
+
+async def log_embedding_preflight() -> None:
+    """Says at STARTUP whether the vector collection is intact.
+
+    THE RISK THIS EXISTS FOR IS DOCUMENTED AND DORMANT. Zatch's own
+    change-stream pipeline re-embeds an edited product with the old
+    384-dim model and no tag; the catalogue and the Atlas index are
+    1536-dim. It has not fired only because nothing has been edited. The
+    first seller who changes a price starts it, and the symptom is a
+    product quietly missing from search - no error, no exception, no
+    difference an operator could see.
+
+    Startup is when someone is reading, so this is where it gets said.
+    Never fatal: a service that refuses to boot because ONE product left
+    the index is a worse outage than the one it is reporting.
+    """
+    try:
+        audit = await audit_embeddings()
+    except Exception as exc:
+        logger.warning("embedding_preflight_failed", error=str(exc)[:200])
+        return
+
+    log = {
+        "ok": logger.info,
+        "empty": logger.warning,
+        "degraded": logger.error,
+        "broken": logger.error,
+    }[audit.level]
+    log(
+        "embedding_preflight",
+        level=audit.level,
+        summary=audit.summary,
+        total=audit.total,
+        expected_dimensions=audit.expected_dimensions,
+        wrong_width=audit.wrong_width[:5],
+        wrong_tag=audit.wrong_tag[:5],
+        consequence=(
+            "affected products are absent from semantic search and nothing "
+            "else reports it"
+            if audit.level in ("degraded", "broken")
+            else "semantic search is intact"
+        ),
+    )
+
+
 async def search_products_semantically(query: str, limit: int = 5) -> list[dict]:
     """Free-text search by MEANING: "something cosy for winter".
 
@@ -498,17 +727,73 @@ async def search_products_semantically(query: str, limit: int = 5) -> list[dict]
 
     db = get_database()
 
-    # Check the catalogue BEFORE spending an embedding call on a query
-    # we would not be able to use.
-    sample = await db[EMBEDDINGS_COLLECTION].find_one(
-        {}, {"embeddingModel": 1, "embedding": 1}
-    )
-    if sample is None:
-        logger.info("semantic_search_no_embeddings")
-        return []
-
     active_tag = embedding_model_tag()
-    stored_tag = sample.get("embeddingModel")
+
+    # WHY THIS NO LONGER SAMPLES ONE DOCUMENT.
+    #
+    # It used to be find_one({}) - take any embedding, check its tag. That
+    # answers "was this catalogue embedded by our model", and misses the
+    # failure this project actually faces: Zatch's own change-stream
+    # pipeline re-embeds a product whenever a seller edits it, with the
+    # OLD 384-dim model and no tag. That poisons ONE document out of 143,
+    # and a sample finds it roughly one time in 143.
+    #
+    # So the query asks the opposite question - "is there ANY document
+    # that is not ours" - which costs the same single round trip and
+    # cannot miss. $ne matches a MISSING field too, which is exactly what
+    # the rogue writer leaves behind.
+    rogue = await db[EMBEDDINGS_COLLECTION].find_one(
+        {"embeddingModel": {"$ne": active_tag}},
+        {"embeddingModel": 1, "embedding": 1},
+    )
+
+    if rogue is None:
+        # Everything carries our tag. Nothing to check, nothing to spend.
+        stored_tag = active_tag
+        sample = None
+    else:
+        total = await db[EMBEDDINGS_COLLECTION].count_documents({})
+        if total == 0:
+            logger.info("semantic_search_no_embeddings")
+            return []
+
+        foreign = await db[EMBEDDINGS_COLLECTION].count_documents(
+            {"embeddingModel": {"$ne": active_tag}}
+        )
+
+        if foreign < total:
+            # A MINORITY IS CONTAMINATION, NOT A WRONG CATALOGUE, and the
+            # two deserve opposite responses. Refusing here would turn one
+            # edited product into a total outage of semantic search, while
+            # the other 142 comparisons are perfectly valid - and Atlas has
+            # already dropped the bad vector from the index, which is why
+            # nobody would otherwise notice.
+            #
+            # So the search proceeds and the incident is made loud: this
+            # log line, the /health status, and scripts/check_embeddings.py
+            # all name it. That is the difference between degrading and
+            # degrading SILENTLY.
+            logger.error(
+                "embedding_collection_contaminated",
+                contaminated=foreign,
+                total=total,
+                expected_tag=active_tag,
+                example_id=str(rogue.get("_id")),
+                example_tag=rogue.get("embeddingModel") or "(untagged)",
+                example_width=len(rogue.get("embedding") or []),
+                expected_width=expected_dimensions(),
+                consequence="those products are missing from every semantic "
+                            "search and nothing else reports it",
+                fix="re-embed them with scripts/reembed_catalogue.py, and "
+                    "stop the pipeline that wrote them",
+            )
+            stored_tag = active_tag
+            sample = rogue
+        else:
+            # Every document disagrees - the catalogue belongs to another
+            # model entirely, which is the original guard's case.
+            sample = rogue
+            stored_tag = rogue.get("embeddingModel")
 
     # THE UNTAGGED CASE. Documents from the original pipeline carry no
     # embeddingModel field at all, so they can never match any tag - and

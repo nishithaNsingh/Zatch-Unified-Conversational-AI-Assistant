@@ -84,12 +84,91 @@ class EmbeddingUnavailable(Exception):
     """Raised when the embedding endpoint cannot be reached or refuses."""
 
 
+class EmbeddingDimensionMismatch(Exception):
+    """Raised when a vector is not the width the index expects.
+
+    SEPARATE FROM EmbeddingModelMismatch because the causes and the
+    remedies differ. That one means the catalogue was embedded by a
+    different MODEL - the fix is to re-embed or reconfigure. This one
+    means a vector of the wrong WIDTH exists or is about to be written,
+    which Atlas cannot index at all: the fix is to stop whatever
+    produced it.
+
+    Both are fatal on purpose. A wrong-width vector is not a slightly
+    worse result - it is a document that silently vanishes from every
+    search, because the index refuses to hold it.
+    """
+
+
 class EmbeddingModelMismatch(Exception):
     """Raised when the stored catalogue was embedded by a different model.
 
     Deliberately fatal. The alternative is returning ranked nonsense that
     looks like a working search.
     """
+
+
+def expected_dimensions() -> int:
+    """The vector width the ACTIVE backend must produce.
+
+    Mirrors embedding_model_tag()'s backend switch deliberately: the tag
+    and the width describe the same model, so they have to be read from
+    the same place or they can disagree - and a guard whose two halves
+    disagree certifies exactly the state it exists to catch.
+
+    This value is also what the Atlas index was built with (see
+    scripts/reembed_catalogue.py, which passes it as numDimensions), so
+    "matches this" and "the index can hold it" are the same question.
+    """
+    settings = get_settings()
+    if settings.embedding_backend == "local":
+        return settings.local_embedding_dimensions
+    return settings.azure_embedding_dimensions
+
+
+def validate_dimensions(vectors: list, where: str = "embedding") -> None:
+    """Refuses a batch containing a vector of the wrong width.
+
+    CALLED AT THE SOURCE, not at each call site, so that "validate before
+    writing" is not a step anyone can forget. Every vector in this
+    project comes out of embed_texts(), and it cannot return one that
+    would not fit the index.
+
+    THE FAILURE THIS PREVENTS IS SILENT AND PERMANENT. Atlas will not
+    index a vector whose width does not match numDimensions, so the
+    document simply stops being findable - the search keeps working,
+    returns slightly fewer results, and nothing anywhere errors. Writing
+    such a vector is worse than failing to write one, so this raises.
+
+    The offending POSITIONS are named, not just the count: with a batch
+    of 64 the difference between "one bad vector" and "the model changed
+    width" is the thing you need to know first.
+    """
+    expected = expected_dimensions()
+    wrong = [
+        (index, len(vector) if vector is not None else 0)
+        for index, vector in enumerate(vectors)
+        if vector is None or len(vector) != expected
+    ]
+    if not wrong:
+        return
+
+    detail = ", ".join(f"#{i} has {width}" for i, width in wrong[:5])
+    more = f" (+{len(wrong) - 5} more)" if len(wrong) > 5 else ""
+    logger.error(
+        "embedding_dimension_mismatch",
+        where=where,
+        expected=expected,
+        wrong_count=len(wrong),
+        sample=detail,
+        consequence="Atlas cannot index a vector of the wrong width, so the "
+                    "document would silently disappear from every search",
+    )
+    raise EmbeddingDimensionMismatch(
+        f"{where}: expected {expected}-dim vectors, got {detail}{more}. "
+        f"Refusing to continue - a wrong-width vector is not indexable and "
+        f"would vanish from search without erroring."
+    )
 
 
 def embeddings_configured() -> bool:
@@ -185,7 +264,9 @@ async def _embed_local(texts: list[str]) -> list[list[float]]:
         )
 
     vectors = await asyncio.to_thread(encode)
-    return [list(map(float, v)) for v in vectors]
+    out = [list(map(float, v)) for v in vectors]
+    validate_dimensions(out, where="local embedding backend")
+    return out
 
 
 def _endpoint() -> tuple[str, dict]:
@@ -254,6 +335,12 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
         raise EmbeddingUnavailable(
             f"asked for {len(texts)} embeddings, received {len(vectors)}"
         )
+    # THE LAST POINT AT WHICH A BAD VECTOR IS STILL CHEAP TO STOP.
+    # `dimensions` is sent in the request, but that is a REQUEST - a
+    # model that ignores it, a deployment pointed at a different model,
+    # or a future API change all return a width nobody asked for, and
+    # every one of them looks like success.
+    validate_dimensions(vectors, where="Azure embedding response")
     return vectors
 
 

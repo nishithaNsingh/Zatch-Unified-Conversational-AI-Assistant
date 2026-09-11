@@ -120,7 +120,10 @@ class TestTheCollectorIsActuallyFilled:
         raw = await execute_tool("get_trending_products", {}, "u1", collector=batches)
 
         assert len(batches) == 1
-        assert batches[0][0]["product_id"] == "a" * 24
+        # Each batch says WHAT it is, so the orchestrator can tell a
+        # product row from a Bit row - see _bit_cards.
+        assert batches[0]["kind"] == "products"
+        assert batches[0]["items"][0]["product_id"] == "a" * 24
         # And the model's own view is untouched by any of this.
         assert "product_id" in json.loads(raw)[0]
 
@@ -280,3 +283,95 @@ class TestThumbnails:
 
         monkeypatch.setattr(tool_executor.products_repo, "get_products_by_ids", boom)
         assert await tool_executor.attach_thumbnails([]) == []
+
+
+# ── Bits, the same pattern for a different screen ────────────────────
+
+from app.agent.tool_executor import _bit_cards, _trim_bits  # noqa: E402
+
+
+class TestBitsAreTappableRowsNotProse:
+    """A Bit used to arrive as a line of text reading "Italian pants -
+    1.2k views, 340 likes". It is now a card carrying the title alone,
+    drawn with the same component a product row uses."""
+
+    RAW = [
+        {"_id": "b" * 24, "title": "Italian pants", "hashtags": ["#pants", "#style"],
+         "likeCount": 340, "viewCount": 1200,
+         "video": {"url": "https://cdn/x.mp4"}},
+    ]
+
+    def test_the_counts_never_reach_the_model(self):
+        """WITHHELD, NOT FORBIDDEN. A prompt sentence telling it not to
+        mention views is a sentence it can ignore; a field it was never
+        given is one it cannot report."""
+        trimmed = _trim_bits(self.RAW)
+        assert "likeCount" not in trimmed[0]
+        assert "viewCount" not in trimmed[0]
+
+    def test_the_title_and_id_do(self):
+        trimmed = _trim_bits(self.RAW)
+        assert trimmed[0]["bit_id"] == "b" * 24
+        assert trimmed[0]["title"] == "Italian pants"
+
+    def test_hashtags_survive(self):
+        """Not decoration: search_by_hashtag is asked "any videos tagged
+        #fashion", and the answer has to say which tag matched."""
+        assert _trim_bits(self.RAW)[0]["hashtags"] == ["#pants", "#style"]
+
+    def test_a_card_is_title_and_id_only(self):
+        cards = _bit_cards("get_trending_bits", _trim_bits(self.RAW))
+        assert cards == [{"bit_id": "b" * 24, "title": "Italian pants"}]
+
+    def test_hashtag_search_produces_cards_too(self):
+        cards = _bit_cards("search_by_hashtag", _trim_bits(self.RAW))
+        assert len(cards) == 1
+
+    def test_a_bit_with_no_id_is_not_offered(self):
+        """Same rule as products: a row that cannot be opened is not
+        drawn as something to tap."""
+        assert _bit_cards("get_trending_bits", [{"title": "orphan"}]) == []
+
+    def test_product_tools_produce_no_bit_cards(self):
+        """The maps are keyed by tool name rather than sniffed from the
+        result's shape, so a product list can never be mistaken for a
+        video."""
+        assert _bit_cards("get_trending_products", [{"bit_id": "x", "title": "y"}]) == []
+
+    def test_bit_tools_produce_no_product_cards(self):
+        from app.agent.tool_executor import _product_cards
+
+        assert _product_cards("get_trending_bits", _trim_bits(self.RAW)) == []
+
+    async def test_execute_tool_tags_the_batch_as_bits(self, monkeypatch):
+        async def fake_bits(limit=5):
+            return list(TestBitsAreTappableRowsNotProse.RAW)
+
+        monkeypatch.setitem(
+            __import__("app.agent.tools", fromlist=["TOOL_REGISTRY"]).TOOL_REGISTRY,
+            "get_trending_bits", (fake_bits, False),
+        )
+        batches: list = []
+        raw = await execute_tool("get_trending_bits", {}, "u1", collector=batches)
+
+        assert batches[0]["kind"] == "bits"
+        assert batches[0]["items"][0]["title"] == "Italian pants"
+        # And the model's own view carries no counts to write out.
+        assert "viewCount" not in raw and "likeCount" not in raw
+
+
+class TestTheBitsRuleIsInThePrompt:
+    async def test_the_model_is_told_the_cards_do_the_listing(self):
+        from unittest.mock import patch
+
+        from app.agent import orchestrator
+
+        async def _categories():
+            return {"categories": ["Men"], "subCategories": ["shirts"]}
+
+        with patch.object(orchestrator.products_repo,
+                          "get_distinct_categories", _categories):
+            prompt = await orchestrator.build_system_prompt()
+
+        assert "BITS:" in prompt
+        assert "view or like counts" in prompt

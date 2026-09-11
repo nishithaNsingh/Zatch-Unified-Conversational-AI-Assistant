@@ -97,6 +97,20 @@ class TestListBargains:
         page = await bargains_repo.list_bargains(user_id, limit=1)
         assert total >= len(page)
 
-    async def test_counting_an_unknown_user_is_zero_not_an_error(self):
-        assert await bargains_repo.count_bargains("000000000000000000000000") == 0
+    async def test_counting_an_unparseable_user_id_is_zero_not_an_error(self):
+        """Hermetic on purpose: an id that is not an ObjectId is refused
+        by to_object_id before any query is built, so this holds with no
+        database at all - the same shape as the orders sibling in
+        test_tool_result_trimming.py."""
         assert await bargains_repo.count_bargains("nonsense") == 0
+
+    async def test_counting_an_unknown_user_is_zero_not_an_error(self, db):
+        """A WELL-FORMED id for a buyer who does not exist. It takes the
+        `db` fixture because that is the point: this one reaches Mongo,
+        where the unparseable case above never does.
+
+        WITHOUT THE FIXTURE THIS FAILED IN CI. conftest derives the
+        needs_db marker from fixture usage, so a test that touches the
+        database without asking for it is invisible to that split and
+        runs in the hermetic job, where get_database() raises."""
+        assert await bargains_repo.count_bargains("000000000000000000000000") == 0

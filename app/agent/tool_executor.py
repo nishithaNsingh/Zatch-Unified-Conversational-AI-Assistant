@@ -296,14 +296,24 @@ def _trim_live_sessions(sessions: list) -> list:
 def _trim_bits(bits: list) -> list:
     """get_trending_bits / search_by_hashtag - drops the video and
     thumbnail URLs entirely; the model describes a Bit in words and
-    never needs to read a CDN link."""
+    never needs to read a CDN link.
+
+    LIKE AND VIEW COUNTS ARE NOT SENT, and withholding them is the fix
+    rather than a prompt rule. Handed the numbers, the model wrote them
+    out - "Italian pants - 1.2k views, 340 likes" - which is noise in a
+    list whose only useful content is the title, and it is exactly the
+    shape of thing a sentence in the prompt gets ignored about. A model
+    cannot report a field it was never given.
+
+    hashtags STAY. They are not decoration: search_by_hashtag is asked
+    "any videos tagged #fashion", and the answer has to be able to say
+    which tag matched.
+    """
     return [
         {
             "bit_id": str(b.get("_id")),
             "title": b.get("title"),
             "hashtags": (b.get("hashtags") or [])[:5],
-            "likeCount": b.get("likeCount"),
-            "viewCount": b.get("viewCount"),
         }
         for b in (bits or [])[:LLM_LIST_LIMIT_CAP]
     ]
@@ -575,6 +585,46 @@ _PRODUCT_LIST_SOURCES = {
 }
 
 
+# THE SAME PATTERN, FOR BITS. A Bit is a video, not a product: it has a
+# title and no price, and the app opens it on a different screen. So it
+# gets its own map and its own card shape rather than being squeezed into
+# a product row - a card that says "₹—" under a video would be worse than
+# no card.
+#
+# What it does share is the rule that matters: the id travels BESIDE the
+# prose, never inside it. The model still never sees or writes a link.
+_BIT_LIST_SOURCES = {
+    "get_trending_bits": None,
+    "search_by_hashtag": None,
+}
+
+
+def _bit_cards(tool_name: str, result) -> list[dict]:
+    """The Bits this tool result surfaced, as tappable rows.
+
+    TITLE ONLY. The counts are gone from the trimmer above, and nothing
+    else about a Bit belongs on a row whose whole job is "tap this to
+    watch it". No URL, for the same reason _product_cards builds none -
+    the app routes on the id through its own navigation stack.
+    """
+    if tool_name not in _BIT_LIST_SOURCES:
+        return []
+
+    key = _BIT_LIST_SOURCES[tool_name]
+    items = result if key is None else (result or {}).get(key)
+    if not isinstance(items, list):
+        return []
+
+    cards = []
+    for item in items:
+        # A Bit whose id did not survive cannot be opened, so it is not
+        # offered as something to tap.
+        if not isinstance(item, dict) or not item.get("bit_id"):
+            continue
+        cards.append({"bit_id": item["bit_id"], "title": item.get("title")})
+    return cards
+
+
 def _product_cards(tool_name: str, result) -> list[dict]:
     """The products this tool result surfaced, in the shape a client
     needs to draw a tappable card.
@@ -755,12 +805,22 @@ async def execute_tool(
             # so drop the summary and return the list unchanged.
             logger.error("tool_result_summary_failed", tool_name=tool_name, error=str(exc))
 
-    # Products the app can open, collected beside the string the model
+    # Things the app can open, collected beside the string the model
     # reads. A no-op when nobody passed a collector, so /chat and the
     # tests take exactly the path they took before.
+    #
+    # EACH BATCH CARRIES ITS KIND. Products and Bits open different
+    # screens and render differently, and a turn can surface both - "any
+    # videos about sarees, and what sarees do you have" - so the
+    # orchestrator has to be able to tell them apart. Tagging the batch
+    # keeps the existing "last batch wins" rule working across both
+    # rather than needing a second collector threaded through everything.
     if collector is not None:
-        cards = _product_cards(tool_name, result)
-        if cards:
-            collector.append(cards)
+        products = _product_cards(tool_name, result)
+        if products:
+            collector.append({"kind": "products", "items": products})
+        bits = _bit_cards(tool_name, result)
+        if bits:
+            collector.append({"kind": "bits", "items": bits})
 
     return json.dumps(to_json_safe(result), default=str)

@@ -325,7 +325,18 @@ class TestConversationMemory:
         asserted directly.
         """
         session_id = "mem-1"
-        llm = scripted([reply("That's a lovely jacket."), reply("Yes, it's in stock.")])
+        # THE REPLY TEXT MENTIONS THE DOMAIN ON PURPOSE. The scope guard
+        # (orchestrator._enforce_scope) replaces a tool-less reply that
+        # mentions nothing about Zatch, because that is what an answer
+        # written from the model's own knowledge looks like. The old stub
+        # here was "That's a lovely jacket." - which, said without any
+        # lookup, is exactly the ungrounded product claim the guard is
+        # meant to catch. What this test asserts is unchanged: turn 1
+        # survives into turn 2.
+        llm = scripted([
+            reply("That blue jacket is a great pick - it is in stock."),
+            reply("Yes, it's in stock."),
+        ])
 
         await client.post(
             "/chat",
@@ -341,7 +352,9 @@ class TestConversationMemory:
         second_turn = llm.messages_on_call(1)
         contents = [m.get("content") for m in second_turn]
         assert "tell me about the blue jacket" in contents, "turn 1 was lost"
-        assert "That's a lovely jacket." in contents, "the earlier reply was lost"
+        assert (
+            "That blue jacket is a great pick - it is in stock." in contents
+        ), "the earlier reply was lost"
         assert "is it in stock?" in contents
         # Exactly one system prompt - not re-prepended on resume.
         assert sum(1 for m in second_turn if m.get("role") == "system") == 1
@@ -419,7 +432,12 @@ class TestProviderFailureHandling:
 
     async def test_failover_to_the_second_provider(self, client, auth_headers, scripted):
         llm = scripted(
-            [LLMRateLimited("primary out"), reply("Answered by the backup.")],
+            # Domain-flavoured for the same reason as the memory test
+            # above: a tool-less reply mentioning nothing about Zatch is
+            # replaced by the scope guard. This test is about WHICH
+            # provider served the call, not about the wording.
+            [LLMRateLimited("primary out"),
+             reply("Answered by the backup - your orders are all on track.")],
             provider_names=("primary", "secondary"),
         )
         response = await client.post(
@@ -427,7 +445,9 @@ class TestProviderFailureHandling:
             headers=auth_headers,
             json={"message": "hello", "session_id": "f3"},
         )
-        assert response.json()["reply"] == "Answered by the backup."
+        assert response.json()["reply"] == (
+            "Answered by the backup - your orders are all on track."
+        )
         assert [name for name, _, _, _ in llm.calls] == ["primary", "secondary"]
 
     async def test_a_failing_provider_is_not_retried_before_moving_on(

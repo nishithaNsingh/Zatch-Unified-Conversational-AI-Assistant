@@ -50,7 +50,9 @@ from app.agent.embeddings import (  # noqa: E402
     embed_texts,
     embedding_model_tag,
     embeddings_configured,
+    expected_dimensions,
     product_text,
+    validate_dimensions,
 )
 from app.config.settings import get_settings  # noqa: E402
 
@@ -191,7 +193,14 @@ async def main() -> None:
     print("EMBEDDING")
     line()
     vectors = await embed_texts(texts)
+    # embed_texts validates every vector's width before returning, so a
+    # wrong-width batch raises here rather than reaching the write below.
+    # Restated at the write site anyway - this is the last moment before
+    # the catalogue is replaced, and the cost of being wrong is a
+    # collection Atlas cannot index.
+    validate_dimensions(vectors, where="catalogue about to be written")
     print(f"  received {len(vectors)} vectors of {len(vectors[0])} dims")
+    print(f"  validated against {expected_dimensions()} dims and the index")
 
     docs = [
         {

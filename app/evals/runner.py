@@ -16,6 +16,8 @@ WHAT A CASE HAS TO SATISFY:
     tools      it looked in a place that could hold the answer
     forbidden  it avoided the routes a case rules out
     grounded   nothing in the answer traces back to nowhere
+    scope      it refused the off-topic questions and, just as
+               importantly, did NOT refuse the in-scope ones
 
     Grounding HARD failures fail the case. Soft findings - money amounts
     that might be legitimately derived - are printed for a human and do
@@ -43,6 +45,7 @@ from app.agent.orchestrator import (
     FALLBACKS,
     build_system_prompt,
     run_conversation,
+    says_out_of_scope,
 )
 from app.evals.cases import CASES, Case, resolve
 from app.evals.judge import judge_products
@@ -62,6 +65,11 @@ class Result:
     # the score entirely - see NOT ASSESSED below.
     not_assessed: bool = False
     tools_ok: bool = True
+    # Set only for cases that pin scope - empty otherwise. Holds the
+    # sentence explaining WHICH way it went wrong, since "refused an
+    # in-scope question" and "answered an out-of-scope one" are opposite
+    # defects that a bare boolean would flatten into one.
+    wrong_scope: str = ""
     forbidden_used: list = field(default_factory=list)
     hard_failures: list = field(default_factory=list)
     soft_findings: list = field(default_factory=list)
@@ -78,6 +86,7 @@ class Result:
             and not self.error
             and self.answered
             and self.tools_ok
+            and not self.wrong_scope
             and not self.forbidden_used
             and not self.hard_failures
             and not self.invented_products
@@ -94,6 +103,8 @@ class Result:
             out.append("fell back instead of answering")
         if not self.tools_ok:
             out.append("looked nowhere useful")
+        if self.wrong_scope:
+            out.append(self.wrong_scope)
         out += [f"used forbidden {t}" for t in self.forbidden_used]
         out += self.hard_failures
         out += [f"named a product no tool returned: {p!r}"
@@ -158,6 +169,23 @@ async def run_case(
     called = set(tools)
     result.tools_ok = not case.expect_any or bool(called & case.expect_any)
     result.forbidden_used = sorted(called & case.forbid)
+
+    # SCOPE, BOTH WAYS. Only for cases that pin it - expect_refusal is
+    # None everywhere else, and those cases are judged exactly as before.
+    #
+    # Checked BEFORE grounding, and unaffected by it: a refusal cites
+    # nothing and calls no tool, so every other signal here reads it as a
+    # perfectly clean answer. This is the only check that can tell a
+    # correct refusal from a correct answer, which is the whole reason it
+    # exists rather than leaning on tools_ok.
+    if case.expect_refusal is not None:
+        refused = says_out_of_scope(reply)
+        if case.expect_refusal and not refused:
+            result.wrong_scope = (
+                "answered an out-of-scope question instead of refusing"
+            )
+        elif not case.expect_refusal and refused:
+            result.wrong_scope = "refused a question that is in scope"
 
     report = grounding.check(reply, messages)
     result.hard_failures = report.hard_failures
@@ -302,6 +330,7 @@ def compare(current: dict, previous: dict) -> None:
             not row["error"] and row["answered"] and row["tools_ok"]
             and not row["forbidden_used"] and not row["hard_failures"]
             and not row.get("invented_products")
+            and not row.get("wrong_scope")
         )
 
     # Only cases assessed in BOTH runs can have moved. A provider drop is

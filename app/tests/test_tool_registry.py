@@ -1,6 +1,6 @@
 """
 WHAT:
-    Invariants over the tool surface itself - the 34 schemas in
+    Invariants over the tool surface itself - the 35 schemas in
     agent/tools.py, the registry that maps them to repo functions, and
     the trimmers that shrink their results.
 

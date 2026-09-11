@@ -39,7 +39,12 @@ LOGIC:
       make the next API call invalid.
     - SESSION_TIMEOUT_MINUTES: an untouched session expires. Under Redis
       this is a native TTL refreshed on every write; under the dict it is
-      a lazy check on read, as before.
+      a lazy check on read, as before. Now 24 hours - see the constant
+      for what that buys and what it costs.
+
+    A conversation can also be ended DELIBERATELY rather than waited
+    out: clear_session() removes it from whichever backend is live, and
+    DELETE /chat/session is how the app reaches it.
 
     OWNERSHIP: a session is keyed by the VERIFIED user_id together with
     the session_id, never by session_id alone. A session_id is
@@ -74,7 +79,32 @@ from app.db.redis_client import get_redis
 logger = structlog.get_logger()
 
 MAX_TURNS = 10
-SESSION_TIMEOUT_MINUTES = 30
+# A DAY, NOT HALF AN HOUR - and the tradeoff is worth stating, because
+# this value is not only a convenience setting.
+#
+# WHAT IT BUYS: a shopper who asks about an order in the morning and
+# comes back after lunch is still in the same conversation. At 30
+# minutes "anything similar?" answered "similar to what?" for anyone who
+# put their phone down, which reads as the assistant being forgetful
+# rather than as a timeout.
+#
+# WHAT IT COSTS, and this is the half that needs saying out loud: the
+# history holds REAL customer data - order ids, courier tracking
+# numbers, delivery cities - and it now sits in Redis for 24 hours
+# instead of 30 minutes. That is a 48x longer window in which a
+# conversation exists somewhere other than the phone that had it. It is
+# encrypted in transit (the rediss:// scheme is load-bearing - see
+# HANDOFF.md) and expires on its own, but it is there.
+#
+# That cost is the reason DELETE /chat/session exists: a user who wants
+# the conversation gone no longer has to wait out a TTL, and the /demo
+# page's "Clear" button spends it.
+#
+# STORAGE follows the same multiple. Each key holds up to MAX_TURNS
+# turns including tool results, so a busy day now accumulates what an
+# hour used to. Upstash's free tier is measured in megabytes; if that
+# becomes tight, this number is the first dial to turn.
+SESSION_TIMEOUT_MINUTES = 24 * 60
 
 # Only applies to the in-process fallback. Redis expires keys itself, so
 # it needs no ceiling: an abandoned session costs nothing once its TTL

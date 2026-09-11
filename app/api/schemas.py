@@ -33,6 +33,22 @@ class ProductCard(BaseModel):
     image: str | None = None
 
 
+class BitCard(BaseModel):
+    """One Bit the answer drew on, for the client to render as a
+    tappable row.
+
+    TITLE AND ID, AND NOTHING ELSE. A Bit is a short video: the row's
+    whole job is "tap this to watch it", and the view and like counts
+    that used to travel here are not sent to the model at all any more
+    (see tool_executor._trim_bits). No URL, for the same reason
+    ProductCard carries none - the app routes on the id through its own
+    navigation stack.
+    """
+
+    bit_id: str
+    title: str | None = None
+
+
 class Attribution(BaseModel):
     """One claim in the reply, and the tool that vouched for it.
 
@@ -58,4 +74,8 @@ class ChatResponse(BaseModel):
     # Defaulted, so a client written against the old shape keeps
     # deserialising this response unchanged.
     products: list[ProductCard] = Field(default_factory=list)
+    # Same shape of thing as products, different screen. Defaulted for
+    # the same reason: a client written against the old response keeps
+    # deserialising this one unchanged.
+    bits: list[BitCard] = Field(default_factory=list)
     attribution: list[Attribution] = Field(default_factory=list)

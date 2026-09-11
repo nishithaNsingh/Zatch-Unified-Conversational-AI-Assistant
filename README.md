@@ -13,11 +13,38 @@ language — *"where's my order?"*, *"any blue jackets under ₹2000?"*,
 - **Read-only.** Enforced at the Atlas user role, not just in code. The
   assistant reports cancellation *eligibility*; it never cancels anything.
 - **Identity comes only from the verified JWT.** `user_id` is not a parameter
-  in any of the 34 tool schemas, so the model has no way to express a request
+  in any of the 35 tool schemas, so the model has no way to express a request
   for another user's data. It is injected server-side by `tool_executor.py`.
 - **Three independent data-safety layers.** Read-only DB role → per-collection
   field allowlist used as the Mongo projection → an independent response
   sanitizer that re-strips anything not allowlisted.
+- **Zatch topics only, in two layers.** A system-prompt rule states the scope
+  and quotes the exact refusal. A mechanical post-check then reads the
+  finished reply and suppresses it on either of two signals: nothing vouches
+  for any of it (no lookup, no mention of Zatch), or it asserts a proper noun
+  no tool returned — which is what catches an off-topic answer *wearing* a
+  domain word, like "Zatch doesn't sell those, but the capital of France is
+  Paris". The prompt is the layer that can read a follow-up in context, and
+  the layer a jailbreak argues with; the post-check has nothing to negotiate
+  with.
+
+  **Suppressing is narrower than detecting**, drawn that way by measurement:
+  a finding inside a reply that rests on real tool results is recorded and
+  left alone, because every such finding measured across ~24 live
+  conversations was a correct answer flagged for its own formatting (`Men`,
+  `Jul`, `Total`). Only a reply grounded in nothing is replaced — and the
+  user's own words never count as grounding, or a jailbreak would vouch for
+  itself by naming its subject. A refusal that contradicts a *successful*
+  lookup is rejected outright and re-asked, since a search that returned a
+  product proves the question was about the catalogue.
+
+  Greetings, "what can you do", follow-ups carrying no Zatch words ("the
+  second one"), and products whose names collide with people or places
+  ("Lenin shirts") are deliberately still answered: over-refusal is the
+  failure a user actually feels. See the SCOPE note in
+  `agent/orchestrator.py` and `grounding.unexplained_answer`, pinned by
+  `tests/test_scope.py` — including its remaining blind spot — and by eval
+  cases in both directions.
 
 ## Layout
 
@@ -34,6 +61,26 @@ app/
 docs/            Implementation plan, requirements, schema reference
 scripts/         Dev-only helpers, not part of the deployed app
 ```
+
+### The vector collection checks itself
+
+Free-text semantic search is only meaningful while every stored vector
+came from the model that embeds the query, at the width the Atlas index
+was built for. Zatch's own change-stream pipeline still re-embeds edited
+products with the old 384-dim model and no tag, so that assumption can
+be broken by a seller changing a price — and Atlas simply stops indexing
+the affected product, which looks like nothing at all.
+
+Three layers, because the write side and the read side fail differently:
+
+| Layer | What it does |
+|---|---|
+| `embeddings.validate_dimensions` | No producer in this repo can emit a wrong-width vector — enforced inside `embed_texts`, so it is not a step anyone can forget |
+| `products_repo.audit_embeddings` | Scans every stored vector and names the offending ids. Read-only: it reports, it never repairs |
+| The search guard | Asks for any document that is *not* ours, rather than sampling one and hoping — a single poisoned document was previously found with probability 1/143 |
+
+Reported at startup (`embedding_preflight`), through `/health`, on every
+affected search, and by `scripts/check_embeddings.py`.
 
 ### Deliberately not reachable from chat
 
@@ -95,12 +142,36 @@ uv run uvicorn app.api.main:app --reload
 Interactive docs at http://127.0.0.1:8000/docs, and a chat surface for
 demos at http://127.0.0.1:8000/demo
 
-### Two endpoints, one conversation
+### Three endpoints, one conversation
 
 | Endpoint | Shape | Use |
 |---|---|---|
 | `POST /chat` | JSON in, JSON out | The contract the mobile app was written against. Unchanged. |
 | `POST /chat/stream` | JSON in, Server-Sent Events out | The same answer as it is produced. |
+| `DELETE /chat/session/{id}` | 204, no body | Ends one conversation for good — removes it from the server, not just from the screen. |
+
+The `/demo` page keeps a **named account's** transcript across reloads
+(mirrored to `localStorage` under that account's own key) and keeps
+**nothing** for the pasted-token path, which has no identity behind it.
+A saved transcript is pruned once it passes the server's own session TTL
+— the page reads that number from `/demo/stats` rather than hardcoding
+it — so the screen can never show a conversation the model has already
+forgotten. Persisting real buyers' order history to disk is the cost;
+sign in as a named account only on a machine you would trust with it.
+
+Answers also carry `products` and `bits` — `(id, name)` rows the client
+renders as tappable cards. The id travels beside the prose rather than
+inside it, so the model never composes a link and a card cannot open the
+wrong thing. Wiring those taps to real screens is one handler per type:
+see [docs/app-integration.md](docs/app-integration.md).
+
+Conversation history expires after **24 hours** of inactivity. That is
+long enough that a shopper who puts their phone down after lunch is
+still in the same conversation, and long enough that waiting it out is
+not a delete — which is why the endpoint above exists, and why `/demo`
+has a **Clear** button that calls it. The store is keyed by the verified
+`user_id` joined to the session id, so a caller can only ever clear
+their own.
 
 They are not two implementations — both call the same
 `run_conversation`, and the only difference is that the streaming one
@@ -133,7 +204,7 @@ live `MONGODB_URI`.
 uv run pytest -v
 ```
 
-274 of the 375 tests need no database at all and run anywhere:
+411 of the 527 tests need no database at all and run anywhere:
 
 ```bash
 uv run pytest -m "not needs_db"

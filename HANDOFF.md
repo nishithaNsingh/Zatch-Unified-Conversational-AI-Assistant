@@ -99,7 +99,7 @@ uv sync
 # 4. Verify, in this order
 uv run python scripts/inspect_data.py     # data + connection
 uv run python scripts/check_azure.py      # model + credit remaining
-uv run pytest -q                          # 374 should pass
+uv run pytest -q                          # 521 should pass
 ```
 
 If `inspect_data.py` fails, it is almost certainly section 2.
@@ -253,6 +253,32 @@ catalogue had no edits for five weeks beforehand).
 and either way semantic search quietly degrades. Update that pipeline to
 write 1536-dim vectors with the tag above, or expect this to break the
 first time a seller changes a price.
+
+**It is no longer quiet.** The degradation is the same; what changed is
+that the service now notices and says so, in four places:
+
+```powershell
+uv run python scripts/check_embeddings.py
+```
+
+- that script scans every vector and **names the offending product ids**
+- startup logs `embedding_preflight` — `info` when intact, `error` the
+  moment anything does not match
+- `/health` reports `"embeddings": {"status": ..., "contaminated": N}`,
+  which is what monitoring should alert on
+- a semantic search over a contaminated collection logs
+  `embedding_collection_contaminated` naming an example id and its width
+
+The search still runs when only *some* documents are affected — the
+other 142 comparisons are valid, and refusing would turn one edited
+product into a total outage. What it no longer does is degrade in
+silence.
+
+Nothing here repairs anything: this service's credential is read-only by
+design. Fixing a poisoned vector means re-embedding it with
+`scripts/reembed_catalogue.py` under a temporarily granted `readWrite`
+role — and stopping the pipeline that wrote it first, or you simply lose
+the race again.
 
 ### Redoing it
 
