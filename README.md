@@ -8,6 +8,11 @@ service resolves it against the live MongoDB Atlas data and replies in natural
 language — *"where's my order?"*, *"any blue jackets under ₹2000?"*,
 *"can I bargain on this?"*
 
+**New to the project?** Start with
+[docs/PROJECT_DOCUMENTATION.md](docs/PROJECT_DOCUMENTATION.md) — the
+overview, architecture, features, deployment and remaining work in one
+place.
+
 ## Core guarantees
 
 - **Read-only.** Enforced at the Atlas user role, not just in code. The
@@ -109,9 +114,9 @@ Copy `.env.example` to `.env` and fill in the values:
 | Variable | Required | Purpose |
 |---|---|---|
 | `MONGODB_URI` | yes | Atlas connection string (read-only service account) |
-| `LLM_API_KEY` | yes | Primary LLM provider (Groq) |
 | `JWT_SECRET` | yes | Must match the main Zatch backend's signing secret |
-| `GEMINI_API_KEY` | no | Fallback provider; app runs on Groq alone without it |
+| `AZURE_OPENAI_*` | on real data | Primary LLM provider — the only eligible one when `MONGODB_DATABASE=zatch` |
+| `LLM_API_KEY` / `GEMINI_API_KEY` | no | Groq / Gemini fallbacks, used only against demo data (they may train on prompts) |
 | `DEMO_UI_ENABLED` | no | Serves the demo chat page at `/demo`. Defaults to **true**; set false for public deployments |
 | `BACKUP_LLM_*` | no | A second provider whose terms exclude training on prompts. The only thing that stops Azure being a single point of failure against real data — see HANDOFF.md |
 | `REDIS_URL` | no | Shared conversation memory and rate-limit counts. Required for more than one worker — see below |
@@ -204,7 +209,7 @@ live `MONGODB_URI`.
 uv run pytest -v
 ```
 
-411 of the 527 tests need no database at all and run anywhere:
+560 of the 670 tests need no database at all and run anywhere:
 
 ```bash
 uv run pytest -m "not needs_db"

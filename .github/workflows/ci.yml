@@ -14,7 +14,7 @@
 # the `db` fixture as `needs_db`, derived from the fixture itself, so
 # the split cannot drift as tests are added.
 #
-# WHAT REMAINS IS NOT THE LEFTOVERS. The 411 hermetic tests are the
+# WHAT REMAINS IS NOT THE LEFTOVERS. The 560 hermetic tests are the
 # security invariants (no schema may accept an identity parameter), the
 # provider-selection rules that keep real customer data away from
 # providers that train on prompts, the rate limiter on both backends,

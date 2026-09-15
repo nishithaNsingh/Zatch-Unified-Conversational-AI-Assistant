@@ -185,6 +185,6 @@ request carries a bearer token.
   search
 - `uv run pytest` — the full suite, from a machine whose IP Atlas allows
 
-CI runs the 411 tests that need no database (`-m "not needs_db"`) plus
+CI runs the 560 tests that need no database (`-m "not needs_db"`) plus
 a container build. It cannot run the rest: Atlas allow-lists IPs and
 GitHub runners have none. Run the full suite locally before a release.
