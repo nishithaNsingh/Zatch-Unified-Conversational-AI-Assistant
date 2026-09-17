@@ -396,3 +396,48 @@ class TestTheNamesATooolActuallyReturned:
 
     def test_nothing_looked_up_means_an_empty_set(self):
         assert grounding.product_names([]) == set()
+
+
+def _card(name):
+    return {"product_id": "a" * 24, "name": name}
+
+
+class TestCardsNamedIn:
+    """Search hits are candidates; only what the reply presents is a card."""
+
+    def test_a_not_found_reply_keeps_no_search_cards(self):
+        # The live "sleep wear" search: eight unrelated garments came back.
+        cards = [_card("saree "), _card("Butterfly Statement Shirt"), _card("test"), _card("hi")]
+        reply = "Zatch doesn't have sleepwear right now."
+        assert grounding.cards_named_in(reply, cards) == []
+
+    def test_a_shortened_name_still_counts(self):
+        card = _card("Obsidian Gold Smart watch( Fire-boltt Editions)")
+        reply = "Obsidian Gold Smart Watch — ₹1,999"
+        assert grounding.cards_named_in(reply, [card]) == [card]
+
+    def test_sharing_one_word_is_not_being_named(self):
+        lenin, formal = _card("Lenin shirts"), _card("Formal Shirts")
+        reply = "Lenin shirts — ₹599"
+        assert grounding.cards_named_in(reply, [lenin, formal]) == [lenin]
+
+    def test_case_spacing_and_punctuation_do_not_matter(self):
+        card = _card(" Premium maslin silk ")
+        assert grounding.cards_named_in("It's listed as PREMIUM MASLIN-SILK.", [card]) == [card]
+
+    def test_a_name_with_no_meaningful_word_needs_the_whole_name(self):
+        assert grounding.cards_named_in("Here you go", [_card("hi")]) == []
+
+    def test_order_is_preserved(self):
+        a, b = _card("RL Black shirt"), _card("Lenin cargo shorts")
+        reply = "Lenin cargo shorts — ₹450\nRL Black shirt — ₹899"
+        assert grounding.cards_named_in(reply, [a, b]) == [a, b]
+
+    def test_only_searches_are_filtered(self):
+        assert grounding.CANDIDATE_SEARCHES == {"search_products_by_name", "search_products_semantically"}
+
+    def test_a_one_word_name_must_lead_its_own_line(self):
+        shirt, butterfly = _card("Shirt"), _card("Butterfly Statement Shirt")
+        reply = "Butterfly Statement Shirt — ₹1,049"
+        assert grounding.cards_named_in(reply, [shirt, butterfly]) == [butterfly]
+        assert grounding.cards_named_in("Shirt — ₹19\n" + reply, [shirt, butterfly]) == [shirt, butterfly]

@@ -475,6 +475,39 @@ def _trim_follow_list(result: dict | None) -> dict | None:
 # Maps a tool name to a function that trims its raw repo result before
 # it's sent to the LLM. Tools not listed here pass through unchanged -
 # order/bargain/review results are already small and specific.
+SEMANTIC_CANDIDATES_NOTE = (
+    "Nearest products by meaning. A vector search ALWAYS returns its nearest "
+    "neighbours, even when the catalogue has nothing of the kind, so these are "
+    "candidates, not confirmed matches. Judge each by its name, category and "
+    "subCategory: keep it if it could reasonably be what was asked for (a shirt "
+    "in party-wear is a party outfit), drop it if it clearly is not (a saree, a "
+    "pair of jeans or a listing named 'test' is not sleepwear). A general shirt, tee "
+    "or trouser is not a specialised item like sleepwear either - when in doubt, leave "
+    "it out. If none fit, say "
+    "Zatch doesn't have that right now and list nothing. category and subCategory "
+    "are for judging only - never show them."
+)
+
+
+def _trim_semantic_candidates(products: list) -> dict:
+    """The trimmed list, with the caveat beside the data it qualifies.
+
+    Measured on the real catalogue, "sleep wear" - which Zatch does not
+    stock - scored higher (0.691) than a real query did (0.672), so no
+    threshold can drop the noise. The system prompt says the same thing,
+    but live runs still presented "test" and "shirtzzz" as sleepwear once
+    in four; a note inside the result is read at the moment of deciding.
+    """
+    # subCategory rides along only here: names rarely say "party wear" or
+    # "sleepwear", so without it the model can only judge fit by name.
+    sub_by_id = {str(p.get("_id")): p.get("subCategory") for p in products or []}
+    items = [
+        {**item, "subCategory": sub_by_id.get(item["product_id"])}
+        for item in _trim_product_list(products)
+    ]
+    return {"note": SEMANTIC_CANDIDATES_NOTE, "closestByMeaning": items}
+
+
 _TRIMMERS = {
     "get_order_history": _trim_order_history,
     "search_products": _trim_product_list,
@@ -483,7 +516,7 @@ _TRIMMERS = {
     "get_product_detail": _trim_product_detail,
     "search_products_by_name": _trim_product_list,
     "find_similar_products": _trim_product_list,
-    "search_products_semantically": _trim_product_list,
+    "search_products_semantically": _trim_semantic_candidates,
     # Live shopping
     "get_live_now": _trim_live_sessions,
     "get_session_recap": _trim_session_recap,
@@ -575,7 +608,7 @@ _SUMMARISERS = {
 _PRODUCT_LIST_SOURCES = {
     "search_products": None,
     "search_products_by_name": None,
-    "search_products_semantically": None,
+    "search_products_semantically": "closestByMeaning",
     "find_similar_products": None,
     "get_trending_products": None,
     "get_recommendations": None,
@@ -818,7 +851,9 @@ async def execute_tool(
     if collector is not None:
         products = _product_cards(tool_name, result)
         if products:
-            collector.append({"kind": "products", "items": products})
+            # The tool travels with the batch: a SEARCH returns candidates
+            # the reply may reject, a detail or trending lookup does not.
+            collector.append({"kind": "products", "items": products, "tool": tool_name})
         bits = _bit_cards(tool_name, result)
         if bits:
             collector.append({"kind": "bits", "items": bits})

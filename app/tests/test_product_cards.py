@@ -375,3 +375,21 @@ class TestTheBitsRuleIsInThePrompt:
 
         assert "BITS:" in prompt
         assert "view or like counts" in prompt
+
+
+class TestSemanticCandidates:
+    """Meaning-search hits reach the model labelled as candidates, and the
+    app still gets them as cards."""
+
+    def test_the_model_reads_the_caveat_beside_the_results(self):
+        from app.agent.tool_executor import _trim_semantic_candidates, SEMANTIC_CANDIDATES_NOTE
+        out = _trim_semantic_candidates([{"_id": "a" * 24, "name": "Track Pants", "price": 450, "subCategory": "activewear-sportswear"}])
+        assert out["note"] == SEMANTIC_CANDIDATES_NOTE
+        assert out["closestByMeaning"][0]["name"] == "Track Pants"
+        assert out["closestByMeaning"][0]["subCategory"] == "activewear-sportswear"
+
+    def test_cards_are_read_from_the_wrapped_list(self):
+        from app.agent.tool_executor import _product_cards, _trim_semantic_candidates
+        wrapped = _trim_semantic_candidates([{"_id": "a" * 24, "name": "Track Pants", "price": 450}])
+        cards = _product_cards("search_products_semantically", wrapped)
+        assert [c["product_id"] for c in cards] == ["a" * 24]

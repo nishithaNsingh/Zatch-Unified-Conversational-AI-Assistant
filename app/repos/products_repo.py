@@ -368,9 +368,19 @@ async def search_products_by_name(name: str, limit: int = 5) -> list[dict]:
                 #              and an assistant presents its top hits as
                 #              real answers, so noise is worse than a
                 #              miss.
+                #
+                # EVERY WORD MUST MATCH (matchCriteria "all"). With the
+                # default "any", ONE word was enough: "sleep wear" matched
+                # eight garments through subCategory slugs like
+                # "fusion-wear", and "Titanium Nebula X9 smartwatch" (not
+                # sold) returned a different smartwatch. Measured on 17
+                # queries: both became empty, "cargo shorts" dropped six
+                # unrelated shirts, and every real product still ranked
+                # first. The fuzzy clause keeps it too, so "Lenin shirts"
+                # still tolerates a one-letter slip per word.
                 "compound": {
                     "should": [
-                        {"text": {"query": name, "path": TEXT_SEARCH_PATHS}},
+                        {"text": {"query": name, "path": TEXT_SEARCH_PATHS, "matchCriteria": "all"}},
                         {
                             "wildcard": {
                                 "query": f"*{name}*",
@@ -383,6 +393,7 @@ async def search_products_by_name(name: str, limit: int = 5) -> list[dict]:
                                 "query": name,
                                 "path": TEXT_SEARCH_PATHS,
                                 "fuzzy": {"maxEdits": 1},
+                                "matchCriteria": "all",
                             }
                         },
                     ],

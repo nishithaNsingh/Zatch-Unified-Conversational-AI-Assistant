@@ -168,6 +168,65 @@ def observed(messages: list[dict]) -> tuple[set, set]:
 PRODUCT_NAME_KEYS = ("name", "productName")
 
 
+# Searches whose results are CANDIDATES, not answers. Both always return
+# something: Atlas Search matches on any token it can, and a vector search
+# returns its nearest neighbours however far away they are. Measured on the
+# real catalogue, "sleep wear" (which Zatch does not stock) scored 0.691
+# against a best of 0.672 for "something cosy to wear in winter" - so no
+# score threshold separates noise from a real hit, and the reply is the
+# only place that judgement is actually made.
+CANDIDATE_SEARCHES = frozenset({"search_products_by_name", "search_products_semantically"})
+
+_NAME_TOKEN = re.compile(r"[a-z0-9]+")
+_NAME_FILLER = frozenset({"the", "and", "for", "with", "size", "new"})
+_LINE_LEAD = re.compile(r"\s[—–-]\s|,|:|\(|₹")
+
+
+def _name_tokens(text: str) -> list[str]:
+    return _NAME_TOKEN.findall((text or "").lower())
+
+
+def cards_named_in(reply: str, cards: list[dict]) -> list[dict]:
+    """The candidate cards the reply actually presents.
+
+    WHY. A search for something Zatch does not sell still returns eight
+    products, and the reply correctly says "I couldn't find sleepwear".
+    Attaching those eight as tappable cards under that sentence contradicts
+    it - the card row is the part a shopper taps.
+
+    A card is kept when MORE THAN HALF of its name's meaningful words appear
+    in the reply, so a shortened name ("Obsidian Gold Smart Watch" for
+    "Obsidian Gold Smart watch( Fire-boltt Editions)") still counts, while
+    sharing one word ("Formal Shirts" beside "Lenin shirts") does not. Names
+    with no meaningful word ("hi") need the whole name.
+    """
+    reply_words = set(_name_tokens(reply))
+    reply_text = " " + " ".join(_name_tokens(reply)) + " "
+    # What each line of the reply names, before its price or detail:
+    # "Shirt — ₹19" leads with "shirt"; "Butterfly Statement Shirt — ₹1,049"
+    # leads with "butterfly statement shirt".
+    line_leads = {
+        " ".join(_name_tokens(_LINE_LEAD.split(line, 1)[0]))
+        for line in (reply or "").splitlines()
+    }
+    kept = []
+    for card in cards:
+        words = _name_tokens(card.get("name"))
+        meaningful = {w for w in words if len(w) >= 3 and w not in _NAME_FILLER}
+        if len(meaningful) == 1:
+            # ONE WORD IS TOO EASY TO FIND. A product called "Shirt" would
+            # otherwise ride along under every reply listing any shirt, so a
+            # one-word name must lead a line of its own.
+            if " ".join(words) in line_leads:
+                kept.append(card)
+        elif meaningful:
+            if len(meaningful & reply_words) * 2 > len(meaningful):
+                kept.append(card)
+        elif words and f" {' '.join(words)} " in reply_text:
+            kept.append(card)
+    return kept
+
+
 def product_names(messages: list[dict]) -> set:
     """Every product name any tool actually returned.
 
