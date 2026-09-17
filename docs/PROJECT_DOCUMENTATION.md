@@ -310,7 +310,7 @@ Every figure, product and order comes from a database lookup.
 |---|---|---|
 | Full pytest suite | **670 passed**, 8 live-API tests deselected | Locally (needs Atlas IP access) |
 | Hermetic subset | **560 passed** | GitHub Actions on every push |
-| Scored quality suite | **45 cases**, last full run **45/45** | On demand, against the real model |
+| Scored quality suite | **48 cases**; last full run 45/45 (before 3 product-fact cases were added) | On demand, against the real model |
 
 The database-dependent tests are marked automatically from fixture usage, so
 the CI split cannot drift. CI also builds the Docker image and asserts it runs
@@ -318,7 +318,7 @@ as a non-root user with no `.env` inside.
 
 ### What the quality suite measures
 
-Each of the 45 cases scores whether the assistant **looked in the right
+Each of the 48 cases scores whether the assistant **looked in the right
 place**, **avoided forbidden routes**, **invented nothing**, and **respected
 scope in both directions** (refusing off-topic questions *and* not refusing
 in-scope ones). Results are compared run-to-run so a prompt change that fixes
