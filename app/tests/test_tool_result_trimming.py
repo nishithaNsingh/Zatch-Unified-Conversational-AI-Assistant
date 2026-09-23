@@ -288,3 +288,49 @@ class TestBargainExpiryIsCountedNotJustDated:
         row = _trim_bargain_list([self._b("accepted", 55)])[0]
         assert "hasLapsed" not in row
         assert "lapsedDaysAgo" not in row
+
+
+class TestDealsTrimming:
+    """The saving is computed before the model sees it - a model doing the
+    percentage itself states a number no lookup returned."""
+
+    def test_the_percentage_and_saving_are_worked_out(self):
+        from app.agent.tool_executor import _trim_deals
+        rows = _trim_deals([{"_id": "a" * 24, "name": "Leather jacket", "price": 1499,
+                             "discountedPrice": 650, "category": "Men"}])
+        assert rows[0]["saving"] == 849
+        assert rows[0]["discountPercent"] == 57  # 56.6 rounded, not "60% off"
+
+    def test_a_product_priced_at_zero_does_not_divide_by_zero(self):
+        from app.agent.tool_executor import _trim_deals
+        rows = _trim_deals([{"_id": "a" * 24, "name": "free thing", "price": 0,
+                             "discountedPrice": 0}])
+        assert "discountPercent" not in rows[0]
+
+    def test_missing_prices_are_survived(self):
+        from app.agent.tool_executor import _trim_deals
+        rows = _trim_deals([{"_id": "a" * 24, "name": "odd row", "price": None,
+                             "discountedPrice": 99}])
+        assert rows[0]["name"] == "odd row" and "saving" not in rows[0]
+
+    def test_no_image_urls_or_internal_fields_survive(self):
+        from app.agent.tool_executor import _trim_deals
+        rows = _trim_deals([{"_id": "a" * 24, "name": "x", "price": 100, "discountedPrice": 50,
+                             "images": [{"url": "https://cdn/x.jpg"}], "sellerId": "s" * 24}])
+        assert set(rows[0]) == {"product_id", "name", "price", "discountedPrice",
+                                "category", "saving", "discountPercent"}
+
+    async def test_the_model_is_told_how_many_are_discounted(self, monkeypatch):
+        # A window with no total reads as the total - the 67-orders lesson.
+        from app.agent import tool_executor
+        monkeypatch.setattr(tool_executor.products_repo, "count_discounted_products",
+                            lambda *a, **k: _async(141))
+        out = await tool_executor._summarise_deals([{"name": "x"}], "user")
+        assert out["showing"] == 1 and out["totalDiscounted"] == 141
+        assert "141 products" in out["note"]
+
+
+def _async(value):
+    async def _run():
+        return value
+    return _run()

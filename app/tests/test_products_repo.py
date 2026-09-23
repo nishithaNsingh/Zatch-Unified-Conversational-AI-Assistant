@@ -96,3 +96,37 @@ class TestCategoryCache:
         await products_repo.get_distinct_categories()
         assert len(calls) == 4
         products_repo.reset_category_cache()
+
+
+class TestDiscountedProducts:
+    """'Any offers?' had no answer before this tool existed."""
+
+    async def test_every_result_is_genuinely_reduced(self, db):
+        from app.repos import products_repo
+        rows = await products_repo.get_discounted_products(limit=8)
+        assert rows, "the live catalogue has discounted products"
+        for row in rows:
+            assert row["discountedPrice"] < row["price"]
+            assert row.get("isSold") is not True
+
+    async def test_the_deepest_reduction_comes_first(self, db):
+        from app.repos import products_repo
+        rows = await products_repo.get_discounted_products(limit=8)
+        pct = [(r["price"] - r["discountedPrice"]) / r["price"] for r in rows]
+        assert pct == sorted(pct, reverse=True)
+
+    async def test_the_count_is_at_least_what_the_page_shows(self, db):
+        from app.repos import products_repo
+        rows = await products_repo.get_discounted_products(limit=5)
+        assert await products_repo.count_discounted_products() >= len(rows)
+
+    async def test_a_category_narrows_both_the_list_and_the_count(self, db):
+        from app.repos import products_repo
+        rows = await products_repo.get_discounted_products(category="Men", limit=8)
+        assert all(r.get("category", "").lower() == "men" for r in rows)
+        assert (await products_repo.count_discounted_products("Men")
+                <= await products_repo.count_discounted_products())
+
+    async def test_an_unknown_category_is_empty_not_an_error(self, db):
+        from app.repos import products_repo
+        assert await products_repo.get_discounted_products(category="Spacesuits") == []

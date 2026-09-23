@@ -224,6 +224,75 @@ async def get_trending_products(limit: int = 5) -> list[dict]:
     return sanitize_documents(COLLECTION, docs)
 
 
+def _discounted_query(category: str | None) -> dict:
+    """Products whose discountedPrice is genuinely below their price.
+
+    $expr COMPARES TWO FIELDS OF THE SAME DOCUMENT, which an ordinary
+    query cannot do. Without it the only options are "has a
+    discountedPrice" - true of products sold at full price, where the two
+    fields are equal - or a hardcoded threshold, which invents a rule the
+    business never stated.
+    """
+    query: dict = {
+        "isSold": False,
+        "$expr": {"$lt": ["$discountedPrice", "$price"]},
+    }
+    if category:
+        query["category"] = _case_insensitive_exact(category)
+    return query
+
+
+async def get_discounted_products(
+    category: str | None = None, limit: int = 8
+) -> list[dict]:
+    """Products currently reduced, biggest reduction first.
+
+    WHY PERCENTAGE AND NOT AMOUNT. Sorting by rupees saved ranks by how
+    expensive a thing is - a 5% cut on a ₹29,000 fridge beats half price
+    on a ₹200 hamper - which is not what "any offers?" asks.
+
+    THE HONEST PART IS THE COUNT, NOT THE LIST. Measured on the real
+    catalogue: 141 of 143 products carry some discount, so "these are our
+    offers" would be a misleading way to describe any eight of them. The
+    summariser sends the true total alongside, and the model is told to
+    say so - see _summarise_deals in tool_executor.
+
+    Sorting happens in the aggregation rather than in Python because the
+    limit must be applied to the RANKED set, not to an arbitrary page of
+    it.
+    """
+    db = get_database()
+    pipeline = [
+        {"$match": _discounted_query(category)},
+        {
+            "$addFields": {
+                "_discountFraction": {
+                    "$divide": [
+                        {"$subtract": ["$price", "$discountedPrice"]},
+                        # A product priced at 0 would divide by zero and
+                        # abort the whole aggregation.
+                        {"$cond": [{"$gt": ["$price", 0]}, "$price", 1]},
+                    ]
+                }
+            }
+        },
+        {"$sort": {"_discountFraction": -1}},
+        {"$limit": limit},
+        # Same allowlist as every other read. _discountFraction is not in
+        # it and is therefore dropped here: the percentage the model sees
+        # is computed in the trimmer, from the two prices it also sees.
+        {"$project": get_projection(COLLECTION)},
+    ]
+    docs = [doc async for doc in db[COLLECTION].aggregate(pipeline)]
+    return sanitize_documents(COLLECTION, docs)
+
+
+async def count_discounted_products(category: str | None = None) -> int:
+    """How many products are reduced in total - the number that stops a
+    capped list from reading as the whole of what is on offer."""
+    return await get_database()[COLLECTION].count_documents(_discounted_query(category))
+
+
 async def get_recommendations(user_id: str, limit: int = 5) -> list[dict]:
     """PDF §4.6 — based on the user's own saved/liked products. Falls
     back to trending if the user has no saved/liked history yet, or

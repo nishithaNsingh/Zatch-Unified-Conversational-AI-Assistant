@@ -541,6 +541,7 @@ const SOURCES = {
   search_products_semantically:"the catalogue", find_similar_products:"the catalogue",
   get_product_detail:"the catalogue", get_variant_stock:"the catalogue",
   get_trending_products:"the catalogue", get_recommendations:"the catalogue",
+  get_discounted_products:"current offers",
   check_bargain_eligibility:"bargaining rules", suggest_offer_amount:"bargaining rules",
   list_bargains:"your offers",
   get_bargain_status:"your offers", get_counter_offer:"your offers",
@@ -1925,7 +1926,7 @@ async def _questions_for_user(db, user_id, fallback: list[str]) -> list[str]:
     WHY BREADTH IS THE POINT. The first version asked about orders three
     times, so the assistant read as an order tracker in the first three
     seconds - when it also does bargaining, semantic search, live
-    sessions, Bits, coupons and reviews across 35 tools. The opening row
+    sessions, Bits, coupons and reviews across 36 tools. The opening row
     is the only place a visitor learns what to ask for, so it should
     show the range rather than the same area repeatedly.
 

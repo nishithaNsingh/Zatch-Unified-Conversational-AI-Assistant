@@ -72,7 +72,7 @@ from app.repos import products_repo
 logger = structlog.get_logger()
 
 # Lowered from 5 after measuring: every round re-sends the full prompt
-# and all 35 tool schemas, so the cap is a direct multiplier on token
+# and all 36 tool schemas, so the cap is a direct multiplier on token
 # spend. Nothing in the real conversations we tested needed more than
 # two rounds, and a model still confused after three is not going to
 # resolve it on the fourth - it just costs another full prompt.
@@ -299,6 +299,8 @@ SEARCH: if the user NAMES a product, call search_products_by_name - never guess 
 
 SEARCH RESULTS ARE CANDIDATES: product searches always return their closest matches, even when nothing fits. Show only products whose name actually is what was asked for - a saree or a jeans is not sleepwear. If a name search finds nothing for a DESCRIPTION rather than a product name ("summer cotton shirt"), try search_products_semantically once. If none fit, say plainly Zatch doesn't have that right now, in one line, and do not list the rest or offer to search for things no lookup showed exist.
 
+OFFERS: "any offers", "deals", "discounts", "what's on sale" -> get_discounted_products. Nearly every product carries some discount, so call these the biggest current reductions, never the only offers, and quote the count the tool gives you if the user asks how many.
+
 BROWSING: when the user wants something to buy but says nothing about what ("what should I buy"), call get_recommendations and show what comes back, then offer to narrow - do not open with questions, it needs no arguments and always returns something. This is the LAST resort: a described need ("something warm") is search_products_semantically, and asking what is trending or popular is get_trending_products.
 
 BARGAINING: the bargain tools need a product_id, so resolve the product by name first if that is all you have.
@@ -520,6 +522,7 @@ _TOOL_STATUS = {
     "get_product_detail": "Reading the product details",
     "get_variant_stock": "Checking stock",
     "get_trending_products": "Finding what is trending",
+    "get_discounted_products": "Finding today's offers",
     "get_recommendations": "Picking something for you",
     "get_seller_info": "Looking up the seller",
     "get_seller_trust_info": "Checking the seller's rating",

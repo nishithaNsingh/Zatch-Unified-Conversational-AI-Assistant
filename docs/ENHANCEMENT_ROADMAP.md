@@ -27,8 +27,8 @@
 
 | # | Enhancement | Why first |
 |---|---|---|
-| 1 | **Faster replies** | First word takes 8–17 s today; leading assistants reply in ~2 s. The single biggest usability gap. |
-| 2 | **Hindi / Hinglish** | Indian shoppers write "mera order kab aayega?" or "can u help me with refund". |
+| 1 | ~~**Faster replies**~~ ✅ | Done: reasoning effort set to "low", 12.9 s → 6.7 s on an order lookup. |
+| 2 | ~~**Hindi / Hinglish**~~ ✅ | Done: replies follow the user's language, and correct Hindi answers are no longer refused as off-topic. |
 | 3 | **Hand-off to a human agent** | An escape route whenever the bot can't help. |
 | 4 | **Store policies and FAQ** | Return, shipping, COD and bargaining rules answered from one approved source. |
 | 5 | **Tap-to-open cards in the app** | Turns every product card into a path to a sale. |
@@ -40,8 +40,8 @@
 | Enhancement | Value | Effort | Status today |
 |---|---|---|---|
 | **Tap-to-open product and Bit cards** in the app | Chat becomes a sales channel | Small (app team) | Server side done — see [app-integration.md](app-integration.md) |
-| **Product images on cards** | Shoppers buy what they can see | Tiny — enable Bunny Optimizer, set `PRODUCT_IMAGE_QUERY` | Built, switched off |
-| **Deals / discounted products** | "Any offers?" is a top-5 question with no answer today | Small — one new tool | Missing |
+| **Product images on cards** | Shoppers buy what they can see | Tiny — set `PRODUCT_IMAGE_QUERY` | ⛔ Blocked: Bunny Optimizer is NOT enabled (verified — 6 images returned byte-identical with the resize query; one answer would ship 8.6 MB) |
+| **Deals / discounted products** | "Any offers?" is a top-5 question | Small — one new tool | ✅ Done — `get_discounted_products` |
 | **Best-coupon finder** for the cart | Directly lifts conversion | Medium | Coupon validity check exists |
 | **Bargaining coach** — "offer ₹X, likely accepted" | Unique to Zatch; no big marketplace has it | Medium | Bargain tools exist |
 | **Compare two products** | Standard on Amazon / Flipkart | Small | Missing |

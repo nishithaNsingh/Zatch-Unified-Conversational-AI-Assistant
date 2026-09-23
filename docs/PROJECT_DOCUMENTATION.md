@@ -8,7 +8,7 @@
 | **Live demo** | https://zatch-unified-conversational-ai-assistant.onrender.com/demo |
 | **Repository** | https://github.com/rutujamurkute1-sudam/Zatch-Unified-Conversational-AI-Assistant (private) |
 | **Health** | https://zatch-unified-conversational-ai-assistant.onrender.com/health |
-| **Tests** | 681 passing · 51-case scored quality suite |
+| **Tests** | 694 passing · 53-case scored quality suite |
 | **Status** | Live demo on real data · **not yet integrated** with the Zatch mobile app |
 
 ---
@@ -93,7 +93,7 @@ flowchart LR
         API[Routes<br/>chat.py] --> AUTH[JWT verify<br/>+ rate limit]
         AUTH --> SESS[(Session store<br/>Redis / in-process)]
         AUTH --> ORCH[Orchestrator<br/>tool-calling loop]
-        ORCH <-->|prompt + 35 tool schemas| LLM
+        ORCH <-->|prompt + 36 tool schemas| LLM
         ORCH --> EXEC[Tool executor<br/>injects user_id · trims results]
         EXEC --> REPOS[Repositories<br/>allowlist + sanitizer]
         ORCH --> GUARD[Post-checks<br/>scope · grounding]
@@ -122,7 +122,7 @@ A single question, step by step:
 4. **History.** Prior turns are loaded, keyed by `user_id` **and**
    `session_id`, so a guessed session id cannot read someone else's
    conversation.
-5. **The orchestrator** sends the system prompt, the conversation and 35 tool
+5. **The orchestrator** sends the system prompt, the conversation and 36 tool
    schemas to the LLM.
 6. **The LLM chooses tools**, e.g. `get_order_history` or
    `search_products_by_name`. Independent calls in one round run in parallel.
@@ -205,6 +205,16 @@ Every figure, product and order comes from a database lookup.
   **reviews**.
 - Results render as **tappable product cards**; ids travel beside the prose, so
   the model never composes a link.
+
+### 3.3b Offers and discounts
+
+"Any offers?", "what deals do you have?", "show me discounted products" are
+answered by `get_discounted_products`: the biggest current reductions, with the
+saving and percentage computed server-side.
+
+**141 of 143 products carry some discount**, so the tool also returns that total
+and the model is told to describe the list as the biggest current reductions
+rather than as the only offers.
 
 ### 3.4 Order tracking and history
 
@@ -310,7 +320,7 @@ Every figure, product and order comes from a database lookup.
 |---|---|---|
 | Full pytest suite | **670 passed**, 8 live-API tests deselected | Locally (needs Atlas IP access) |
 | Hermetic subset | **560 passed** | GitHub Actions on every push |
-| Scored quality suite | **51 cases**; last full run 45/45 (before 6 cases were added) | On demand, against the real model |
+| Scored quality suite | **53 cases**; last full run 45/45 (before 6 cases were added) | On demand, against the real model |
 
 The database-dependent tests are marked automatically from fixture usage, so
 the CI split cannot drift. CI also builds the Docker image and asserts it runs
@@ -318,7 +328,7 @@ as a non-root user with no `.env` inside.
 
 ### What the quality suite measures
 
-Each of the 51 cases scores whether the assistant **looked in the right
+Each of the 53 cases scores whether the assistant **looked in the right
 place**, **avoided forbidden routes**, **invented nothing**, and **respected
 scope in both directions** (refusing off-topic questions *and* not refusing
 in-scope ones). Results are compared run-to-run so a prompt change that fixes
@@ -466,7 +476,6 @@ Ordered by what blocks production first.
 
 | # | Item | Detail |
 |---|---|---|
-| 14 | **No "deals" tool** | Nothing lists discounted products, so "any offers?" is answered by asking the user to clarify. A `get_discounted_products` tool would close this (see `.claude/skills/add-a-tool`). |
 | 15 | **Intermittent over-refusal** | "What can you help me with?" was very occasionally refused as off-topic. Needs a measured sampling pass. |
 | 16 | **Bits occasionally listed twice** | The reply sometimes repeats Bit titles in prose above the cards. Cosmetic; needs a measured pass. |
 | 17 | **Scope-check blind spot** | An off-topic claim with no proper noun inside an otherwise grounded reply can pass the mechanical check (the prompt remains the primary defence). Documented in `tests/test_scope.py`. |

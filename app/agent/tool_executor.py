@@ -141,6 +141,25 @@ def _trim_product_list(products: list) -> list:
     return out
 
 
+def _trim_deals(products: list) -> list:
+    """The offers list, with the saving worked out for the model.
+
+    IT CANNOT DO THE ARITHMETIC RELIABLY, and the failure is invisible: a
+    model that writes "₹1,499 now ₹650 - 60% off" has stated a number no
+    lookup returned, and 56.6% is the truth. The same lesson as daysLate
+    on orders - whatever can be computed, is, before the model sees it.
+    """
+    rows = []
+    for item in _trim_product_list(products):
+        price = item.get("price")
+        discounted = item.get("discountedPrice")
+        if isinstance(price, (int, float)) and isinstance(discounted, (int, float)) and price > 0:
+            item["saving"] = round(price - discounted, 2)
+            item["discountPercent"] = round((price - discounted) / price * 100)
+        rows.append(item)
+    return rows
+
+
 def _trim_product_detail(detail: dict | None) -> dict | None:
     """Used for get_product_detail - keeps the fields PDF §4.4's spec
     needs, drops raw image URLs and per-variant image arrays (the LLM
@@ -511,6 +530,7 @@ def _trim_semantic_candidates(products: list) -> dict:
 _TRIMMERS = {
     "get_order_history": _trim_order_history,
     "search_products": _trim_product_list,
+    "get_discounted_products": _trim_deals,
     "get_trending_products": _trim_product_list,
     "get_recommendations": _trim_product_list,
     "get_product_detail": _trim_product_detail,
@@ -561,6 +581,32 @@ async def _summarise_orders(trimmed: list, user_id: str) -> dict:
     }
 
 
+async def _summarise_deals(trimmed: list, user_id: str) -> dict:
+    """The offers, and the fact that nearly everything is one.
+
+    MEASURED: 141 of the 143 products in the live catalogue carry some
+    discount. Handing over eight rows and nothing else invites "here are
+    our offers", which reads as a curated sale and is not true - they are
+    the eight deepest reductions out of almost the whole shop.
+
+    The note says it in a sentence because the sentence is what the model
+    actually uses; the two numbers beside it are there to be quoted.
+    """
+    total = await products_repo.count_discounted_products()
+    return {
+        "deals": trimmed,
+        "showing": len(trimmed),
+        "totalDiscounted": total,
+        "note": (
+            f"Showing the {len(trimmed)} biggest reductions. {total} products "
+            f"are discounted right now, so describe these as the biggest "
+            f"current reductions rather than as the only offers."
+            if total > len(trimmed)
+            else None
+        ),
+    }
+
+
 async def _summarise_bargains(trimmed: list, user_id: str) -> dict:
     total = await bargains_repo.count_bargains(user_id)
     return {
@@ -577,6 +623,8 @@ async def _summarise_bargains(trimmed: list, user_id: str) -> dict:
 
 _SUMMARISERS = {
     "get_order_history": _summarise_orders,
+    # A capped list of offers reads as the whole sale without the total.
+    "get_discounted_products": _summarise_deals,
     # Same defect, same fix: a capped list with no total reads as the
     # total. One line, because the map exists.
     "list_bargains": _summarise_bargains,
@@ -607,6 +655,7 @@ _SUMMARISERS = {
 # list sits under.
 _PRODUCT_LIST_SOURCES = {
     "search_products": None,
+    "get_discounted_products": "deals",
     "search_products_by_name": None,
     "search_products_semantically": "closestByMeaning",
     "find_similar_products": None,

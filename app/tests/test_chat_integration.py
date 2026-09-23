@@ -11,7 +11,7 @@ WHY THE LLM IS MOCKED:
     API calls made them nondeterministic and, on the free tier,
     routinely impossible: the suite spends roughly 6,000 of Groq's
     8,000 tokens/minute before reaching the multi-turn test, whose
-    second turn alone needs ~5,000 more (full history plus all 35 tool
+    second turn alone needs ~5,000 more (full history plus all 36 tool
     schemas, re-sent every round). The test then failed on quota rather
     than on any defect - and a test that fails for reasons unrelated to
     the code stops being read.

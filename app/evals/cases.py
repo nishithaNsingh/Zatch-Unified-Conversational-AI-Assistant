@@ -113,6 +113,12 @@ CASES: list[Case] = [
        ("search_products_semantically", "search_products"),
        note="The exact question that produced the knit-sweater "
             "hallucination when semantic search refused."),
+    _c("offers", "Any offers right now?", ("get_discounted_products",),
+       expect_refusal=False,
+       note="Had no answer at all before get_discounted_products existed - "
+            "the model asked the user to narrow it down instead."),
+    _c("deals-phrasing", "Show me discounted products",
+       ("get_discounted_products", "search_products"), expect_refusal=False),
     _c("trending", "What's trending right now?",
        ("get_trending_products", "get_trending_bits")),
     _c("recommend", "What should I buy?",
