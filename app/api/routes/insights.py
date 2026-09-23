@@ -138,11 +138,9 @@ PAGE = """<!doctype html>
     <div class="cards" id="stats"></div>
 
     <h2>Answers rated unhelpful</h2>
-    <div class="note">The question and the answer, so a bad answer can be read rather than guessed at.</div>
     <div id="downs"></div>
 
     <h2>Asked for, not stocked</h2>
-    <div class="note">Searches that came back with nothing. A high count is a stocking decision waiting to be made.</div>
     <div id="demand"></div>
 
     <h2>Recent misses</h2>
