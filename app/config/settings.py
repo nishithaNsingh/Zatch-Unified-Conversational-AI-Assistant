@@ -144,6 +144,20 @@ class Settings(BaseSettings):
                     "Unset = no gate (local use). Set it for any reachable URL.",
     )
 
+    # THE ONLY KEY TO THE INSIGHTS PAGE, and the switch that mounts it.
+    #
+    # /insights shows real customers' questions and the answers they rated
+    # unhelpful. UNSET MEANS THE ROUTES DO NOT EXIST AT ALL - not "exist
+    # without a gate" - so forgetting to configure it fails closed. That
+    # is deliberately stricter than demo_access_code above, whose page
+    # mounts by default: the insights page needs no visitors to be
+    # useful, and one nobody can reach is one nobody can leak.
+    insights_access_code: str | None = Field(
+        default=None,
+        description="Shared code for the internal /insights dashboard. Unset "
+                    "means /insights and /insights/data are not served.",
+    )
+
     # OPTIONAL. Whether to serve the demo chat page at /demo.
     #
     # DEFAULT ON, so the demo and local development need no extra

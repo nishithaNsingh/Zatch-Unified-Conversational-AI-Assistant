@@ -29,7 +29,7 @@ from app.agent.llm_client import (
     close_llm_client,
     log_provider_preflight,
 )
-from app.api.routes import chat, demo_ui, health
+from app.api.routes import chat, demo_ui, health, insights
 from app.config.logging import configure_logging
 from app.config.settings import get_settings
 from app.db.connection import close_mongo_connection, connect_to_mongo
@@ -113,6 +113,14 @@ def create_app() -> FastAPI:
     application.state.demo_ui_enabled = settings.demo_ui_enabled
     if settings.demo_ui_enabled:
         application.include_router(demo_ui.router)
+
+    # The internal insights dashboard. MOUNTED ONLY WITH A CODE: it shows
+    # real questions and the answers shoppers rated unhelpful, so an
+    # unset code means the routes do not exist rather than that they are
+    # open. See routes/insights.py.
+    application.state.insights_enabled = bool(settings.insights_access_code)
+    if application.state.insights_enabled:
+        application.include_router(insights.router)
 
     return application
 

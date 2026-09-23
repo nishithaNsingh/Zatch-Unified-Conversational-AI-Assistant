@@ -42,7 +42,7 @@ from fastapi.responses import StreamingResponse
 from app.agent.orchestrator import FALLBACK_GENERIC, run_conversation
 from app.api.dependencies import rate_limited_user_id
 from app.api.schemas import ChatRequest, ChatResponse, FeedbackRequest
-from app.memory import feedback_store, session_store
+from app.memory import feedback_store, session_store, usage_store
 
 logger = structlog.get_logger()
 
@@ -71,6 +71,7 @@ async def chat(request: ChatRequest, user_id: str = Depends(rate_limited_user_id
         bits_out=bits,
     )
     await session_store.save_session(user_id, request.session_id, messages)
+    await usage_store.record_question()
     return ChatResponse(
         reply=reply, session_id=request.session_id,
         products=products, bits=bits, attribution=attribution,
@@ -231,6 +232,7 @@ async def chat_stream(
                 user_id, request.message, history=history, on_event=on_event
             )
             await session_store.save_session(user_id, request.session_id, messages)
+            await usage_store.record_question()
             queue.put_nowait(
                 {"type": "done", "reply": reply, "session_id": request.session_id}
             )

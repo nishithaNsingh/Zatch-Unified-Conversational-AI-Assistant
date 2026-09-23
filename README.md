@@ -155,6 +155,7 @@ demos at http://127.0.0.1:8000/demo
 | `POST /chat/stream` | JSON in, Server-Sent Events out | The same answer as it is produced. |
 | `DELETE /chat/session/{id}` | 204, no body | Ends one conversation for good — removes it from the server, not just from the screen. |
 | `POST /chat/feedback` | 204, no body | A 👍 or 👎 on one reply, stored with the exchange it refers to. `scripts/read_feedback.py` reads them back. |
+| `GET /insights` | HTML | Internal dashboard: ratings, the exchanges behind each 👎, unmet demand, questions answered. Served ONLY when `INSIGHTS_ACCESS_CODE` is set. |
 
 The `/demo` page keeps a **named account's** transcript across reloads
 (mirrored to `localStorage` under that account's own key) and keeps

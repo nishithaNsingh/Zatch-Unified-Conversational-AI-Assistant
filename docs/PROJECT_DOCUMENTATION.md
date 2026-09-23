@@ -8,7 +8,7 @@
 | **Live demo** | https://zatch-unified-conversational-ai-assistant.onrender.com/demo |
 | **Repository** | https://github.com/rutujamurkute1-sudam/Zatch-Unified-Conversational-AI-Assistant (private) |
 | **Health** | https://zatch-unified-conversational-ai-assistant.onrender.com/health |
-| **Tests** | 725 passing · 53-case scored quality suite |
+| **Tests** | 736 passing · 53-case scored quality suite |
 | **Status** | Live demo on real data · **not yet integrated** with the Zatch mobile app |
 
 ---
@@ -311,6 +311,22 @@ Two shapes, because one alone misses the case that prompted it:
 No user id is stored: unmet demand is a question about the catalogue.
 `scripts/unmet_demand.py` ranks it.
 
+### 3.10d Insights dashboard (internal)
+
+`/insights` shows, on one page: questions answered (total and today), the
+positive rating rate, the **exchanges behind every thumbs-down** (question and
+reply, so a bad answer can be read rather than guessed at), and the top "not
+found" searches.
+
+The same data `scripts/read_feedback.py` and `scripts/unmet_demand.py` print —
+the scripts need a checkout, a Python environment and the production
+`REDIS_URL`, which is a real barrier for the people whose decisions the data is
+for.
+
+**Off unless `INSIGHTS_ACCESS_CODE` is set**, in which case the routes are not
+mounted at all. Stricter than the demo UI on purpose: the page shows real
+customer questions, so forgetting to configure it fails closed.
+
 ### 3.11 Answer transparency
 
 - Under each reply: which sources were checked ("✓ checked your orders").
@@ -437,6 +453,7 @@ and no `.env` file is present in the image or the repository.
 | `WEB_CONCURRENCY` | Worker count — keep `1` unless `REDIS_URL` is set |
 | `DEMO_UI_ENABLED` | Serve `/demo` (`true`/`false`) |
 | `DEMO_ACCESS_CODE` | Shared code gating `/demo` on a public URL |
+| `INSIGHTS_ACCESS_CODE` | Shared code for the internal `/insights` dashboard. Unset = not served |
 | `AZURE_CREDIT_EXPIRES` | ISO date; drives expiry warnings in logs and `/health` |
 
 **Optional**
@@ -471,6 +488,7 @@ today, not a fault. Only `unavailable` sets `status: degraded`.
 | `POST /chat/stream` | Same, as Server-Sent Events: `status`, `token`, `products`, `bits`, `attribution`, `done`, `error` |
 | `DELETE /chat/session/{id}` | Deletes one conversation (204) |
 | `POST /chat/feedback` | Records 👍/👎 on one reply (204) |
+| `GET /insights` | Internal dashboard — only mounted when `INSIGHTS_ACCESS_CODE` is set |
 | `GET /health` | Liveness and dependency status |
 | `GET /demo` (+ `/demo/*`) | Demo chat UI — disable in production |
 
