@@ -8,7 +8,7 @@
 | **Live demo** | https://zatch-unified-conversational-ai-assistant.onrender.com/demo |
 | **Repository** | https://github.com/rutujamurkute1-sudam/Zatch-Unified-Conversational-AI-Assistant (private) |
 | **Health** | https://zatch-unified-conversational-ai-assistant.onrender.com/health |
-| **Tests** | 715 passing · 53-case scored quality suite |
+| **Tests** | 725 passing · 53-case scored quality suite |
 | **Status** | Live demo on real data · **not yet integrated** with the Zatch mobile app |
 
 ---
@@ -294,6 +294,22 @@ rated, not just a score.
   is read-only by design. Every rating is also written to the service log.
 - `scripts/read_feedback.py` prints the positive rate and the exchanges behind
   each thumbs-down.
+
+### 3.10c Unmet demand ("not found" tracking)
+
+Every product search that comes back with nothing is recorded with what was
+searched for, so the business can see demand the catalogue is not meeting.
+
+Two shapes, because one alone misses the case that prompted it:
+
+- **empty** — a name search returned no rows.
+- **rejected** — a meaning search returned its nearest neighbours and the answer
+  presented none of them. This is the sleepwear case: measured, "sleep wear"
+  scores *higher* (0.691) than a query with real matches (0.672), so no score
+  threshold can separate them — the reply is where the judgement happens.
+
+No user id is stored: unmet demand is a question about the catalogue.
+`scripts/unmet_demand.py` ranks it.
 
 ### 3.11 Answer transparency
 

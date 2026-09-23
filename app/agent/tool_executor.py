@@ -55,6 +55,7 @@ from bson import ObjectId
 
 from app.agent.tools import TOOL_REGISTRY
 from app.config.settings import get_settings
+from app.memory import demand_store
 from app.repos import bargains_repo, orders_repo, products_repo
 from app.repos.base import to_object_id
 
@@ -653,6 +654,13 @@ _SUMMARISERS = {
 #
 # None means the trimmed result IS the list; a string names the key the
 # list sits under.
+# The argument each search carries its QUERY in. A search of one of these
+# that comes back empty is unmet demand, not a bug - see demand_store.
+_SEARCH_QUERY_ARG = {
+    "search_products_by_name": "name",
+    "search_products_semantically": "query",
+}
+
 _PRODUCT_LIST_SOURCES = {
     "search_products": None,
     "get_discounted_products": "deals",
@@ -841,6 +849,17 @@ async def attach_thumbnails(cards: list[dict]) -> list[dict]:
     return cards
 
 
+def _found_rows(tool_name: str, result) -> bool:
+    """Whether a search result actually carries products.
+
+    Read through the same map the cards use, so a result shape that
+    changes cannot leave this silently reporting every search as empty.
+    """
+    key = _PRODUCT_LIST_SOURCES.get(tool_name)
+    items = result if key is None else (result or {}).get(key)
+    return bool(items)
+
+
 async def execute_tool(
     tool_name: str, arguments: dict, user_id: str, collector: list | None = None
 ) -> str:
@@ -897,12 +916,27 @@ async def execute_tool(
     # orchestrator has to be able to tell them apart. Tagging the batch
     # keeps the existing "last batch wins" rule working across both
     # rather than needing a second collector threaded through everything.
+    # WHAT NOBODY STOCKS, recorded where the emptiness is unambiguous.
+    # A name search that returns nothing found nothing; the semantic one
+    # never returns nothing, so its case is judged from the ANSWER and
+    # recorded in orchestrator._deliver instead.
+    query_arg = _SEARCH_QUERY_ARG.get(tool_name)
+    if query_arg and not _found_rows(tool_name, result):
+        await demand_store.record(
+            (arguments or {}).get(query_arg), reason=demand_store.EMPTY, tool=tool_name
+        )
+
     if collector is not None:
         products = _product_cards(tool_name, result)
         if products:
             # The tool travels with the batch: a SEARCH returns candidates
             # the reply may reject, a detail or trending lookup does not.
-            collector.append({"kind": "products", "items": products, "tool": tool_name})
+            collector.append({
+                "kind": "products", "items": products, "tool": tool_name,
+                # The query travels with the batch so _deliver can record
+                # unmet demand when the answer rejects every candidate.
+                "query": (arguments or {}).get(query_arg) if query_arg else None,
+            })
         bits = _bit_cards(tool_name, result)
         if bits:
             collector.append({"kind": "bits", "items": bits})

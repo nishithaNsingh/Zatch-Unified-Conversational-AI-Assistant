@@ -66,6 +66,7 @@ from app.agent.llm_client import (
     stream,
 )
 from app.agent.tool_executor import TOOL_FAILED, attach_thumbnails, execute_tool
+from app.memory import demand_store
 from app.agent.tools import TOOLS
 from app.repos import products_repo
 
@@ -845,6 +846,16 @@ async def run_conversation(
             # in themselves, and a detail reply rarely repeats the full name.
             if batch.get("tool") in grounding.CANDIDATE_SEARCHES:
                 items = grounding.cards_named_in(reply, items)
+                # THE OTHER HALF OF "NOT FOUND". A semantic search always
+                # returns its nearest neighbours, so an empty result never
+                # arrives - what tells us Zatch has nothing of the kind is
+                # that the answer presented none of them. Measured: "sleep
+                # wear" returns eight garments and the reply names none.
+                if not items and batch.get("query"):
+                    await demand_store.record(
+                        batch["query"], reason=demand_store.REJECTED,
+                        tool=batch["tool"],
+                    )
             items = await attach_thumbnails(items) if items else []
             if products_out is not None:
                 products_out.extend(items)
