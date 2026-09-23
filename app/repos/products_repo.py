@@ -207,6 +207,78 @@ async def get_product_detail(product_id: str) -> dict | None:
     }
 
 
+MAX_COMPARED = 4
+
+
+async def compare_products(product_ids: list | None = None) -> dict:
+    """Two to four products side by side, from what their listings hold.
+
+    ONE QUERY, NOT ONE PER PRODUCT - get_products_by_ids already batches,
+    and a comparison is the one place where fetching serially would be
+    most obviously wasteful.
+
+    NOTHING IS INVENTED AND NOTHING IS SCORED. It returns the same fields
+    get_product_detail returns, per product, and says which are missing.
+    There is no "winner": the catalogue holds no attribute that ranks a
+    watch against a watch, and a helpful-looking verdict would be this
+    repo's opinion rather than Zatch's data. What CAN be said from the
+    data - which is cheaper, which is discounted more deeply, which
+    arrives sooner - is computed in the trimmer, where the arithmetic
+    lives for every other tool.
+
+    A product that does not exist is REPORTED rather than dropped:
+    comparing two things and silently returning one reads as a working
+    comparison of the wrong pair.
+    """
+    ids = [str(pid) for pid in (product_ids or []) if pid]
+    if len(ids) < 2:
+        return {
+            "error": "A comparison needs at least two products.",
+            "compared": [],
+            "notFound": ids,
+        }
+
+    ids = ids[:MAX_COMPARED]
+    object_ids = {pid: to_object_id(pid) for pid in ids}
+    found = await get_products_by_ids([oid for oid in object_ids.values() if oid is not None])
+    by_id = {str(doc["_id"]): doc for doc in found}
+
+    compared = []
+    for pid in ids:
+        doc = by_id.get(pid)
+        if doc is None:
+            continue
+        variants = doc.get("variants") or []
+        compared.append({
+            "productId": pid,
+            "name": doc.get("name"),
+            "description": doc.get("description"),
+            "condition": doc.get("condition"),
+            "category": doc.get("category"),
+            "subCategory": doc.get("subCategory"),
+            "price": doc.get("price"),
+            "discountedPrice": doc.get("discountedPrice"),
+            "totalStock": doc.get("totalStock"),
+            "isSold": doc.get("isSold"),
+            "shipping": doc.get("shipping"),
+            # The shopper-facing half of a variant: what it comes in and
+            # whether any of it is left. "NONE" is how this catalogue
+            # spells "this product has no sizes", so it is dropped rather
+            # than shown as a size called NONE.
+            "colors": sorted({v.get("color") for v in variants if v.get("color")}),
+            "sizes": sorted({
+                v.get("size") for v in variants
+                if v.get("size") and str(v.get("size")).upper() != "NONE"
+            }),
+            "inStock": any(not v.get("isOutOfStock") for v in variants) if variants else None,
+        })
+
+    return {
+        "compared": compared,
+        "notFound": [pid for pid in ids if pid not in by_id],
+    }
+
+
 async def get_trending_products(limit: int = 5) -> list[dict]:
     """PDF §4.5 — currently trending / top-pick products."""
     db = get_database()

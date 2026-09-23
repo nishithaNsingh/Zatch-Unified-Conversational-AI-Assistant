@@ -119,6 +119,12 @@ CASES: list[Case] = [
             "the model asked the user to narrow it down instead."),
     _c("deals-phrasing", "Show me discounted products",
        ("get_discounted_products", "search_products"), expect_refusal=False),
+    _c("compare", "Compare {product} and {product2}",
+       ("compare_products", "search_products_by_name", "get_product_detail"),
+       expect_refusal=False,
+       note="Both names have to be resolved before anything can be "
+            "compared. The answer may only report differences the data "
+            "supports - never an overall winner."),
     _c("trending", "What's trending right now?",
        ("get_trending_products", "get_trending_bits")),
     _c("recommend", "What should I buy?",
@@ -276,10 +282,18 @@ CASES: list[Case] = [
 ]
 
 
-def resolve(cases: list[Case], product_name: str) -> list[Case]:
-    """Fills {product} from the live catalogue."""
+def resolve(cases: list[Case], product_name: str, second_name: str | None = None) -> list[Case]:
+    """Fills {product} - and {product2}, for cases that need two - from the
+    live catalogue.
+
+    A comparison case needs a SECOND real product, and it has to be a
+    different one: "compare X and X" is not a comparison and would score
+    a tool that behaved correctly as though it had failed.
+    """
+    second = second_name or product_name
     return [
-        Case(c.id, c.question.replace("{product}", product_name),
+        Case(c.id,
+             c.question.replace("{product2}", second).replace("{product}", product_name),
              c.expect_any, c.forbid, c.note, c.expect_refusal)
         for c in cases
     ]

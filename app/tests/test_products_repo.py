@@ -130,3 +130,56 @@ class TestDiscountedProducts:
     async def test_an_unknown_category_is_empty_not_an_error(self, db):
         from app.repos import products_repo
         assert await products_repo.get_discounted_products(category="Spacesuits") == []
+
+
+class TestCompareProducts:
+    """Side by side, from what the listings actually hold."""
+
+    WATCH = "6a1da6a761d3ca2f1475229e"       # Obsidian Gold Smart watch
+    OTHER_WATCH = "6a1e6e267a12b194e15b3d6e"  # Noise Colorfit Icon Buzz
+    MISSING = "6a0000000000000000000000"
+
+    async def test_two_real_products_come_back_with_their_fields(self, db):
+        from app.repos import products_repo
+        out = await products_repo.compare_products([self.WATCH, self.OTHER_WATCH])
+        assert len(out["compared"]) == 2 and out["notFound"] == []
+        for row in out["compared"]:
+            assert row["name"] and isinstance(row["price"], (int, float))
+            assert row["shipping"] is not None
+
+    async def test_the_order_asked_for_is_the_order_returned(self, db):
+        from app.repos import products_repo
+        out = await products_repo.compare_products([self.OTHER_WATCH, self.WATCH])
+        assert [r["productId"] for r in out["compared"]] == [self.OTHER_WATCH, self.WATCH]
+
+    async def test_a_product_that_does_not_exist_is_reported(self, db):
+        # Silently comparing one product reads as a working comparison of
+        # the wrong pair.
+        from app.repos import products_repo
+        out = await products_repo.compare_products([self.WATCH, self.MISSING])
+        assert [r["productId"] for r in out["compared"]] == [self.WATCH]
+        assert out["notFound"] == [self.MISSING]
+
+    async def test_one_product_is_not_a_comparison(self, db):
+        from app.repos import products_repo
+        out = await products_repo.compare_products([self.WATCH])
+        assert out["compared"] == [] and out["error"]
+
+    async def test_an_unparseable_id_does_not_break_the_query(self, db):
+        from app.repos import products_repo
+        out = await products_repo.compare_products([self.WATCH, "not-an-id"])
+        assert [r["productId"] for r in out["compared"]] == [self.WATCH]
+        assert out["notFound"] == ["not-an-id"]
+
+    async def test_it_never_compares_more_than_the_cap(self, db):
+        from app.repos import products_repo
+        ids = [self.WATCH, self.OTHER_WATCH] * 4
+        out = await products_repo.compare_products(ids)
+        assert len(out["compared"]) <= products_repo.MAX_COMPARED
+
+    async def test_placeholder_sizes_are_dropped(self, db):
+        # This catalogue spells "no sizes" as a size called NONE.
+        from app.repos import products_repo
+        out = await products_repo.compare_products([self.WATCH, self.OTHER_WATCH])
+        for row in out["compared"]:
+            assert all(str(s).upper() != "NONE" for s in row["sizes"])

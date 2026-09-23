@@ -18,7 +18,7 @@ place.
 - **Read-only.** Enforced at the Atlas user role, not just in code. The
   assistant reports cancellation *eligibility*; it never cancels anything.
 - **Identity comes only from the verified JWT.** `user_id` is not a parameter
-  in any of the 36 tool schemas, so the model has no way to express a request
+  in any of the 37 tool schemas, so the model has no way to express a request
   for another user's data. It is injected server-side by `tool_executor.py`.
 - **Three independent data-safety layers.** Read-only DB role → per-collection
   field allowlist used as the Mongo projection → an independent response

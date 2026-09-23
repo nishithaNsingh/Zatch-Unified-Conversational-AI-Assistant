@@ -171,7 +171,7 @@ class TestTheRealModelRefusesToObey:
 
     EXACTLY ONE TEST HERE, for the reason the live class in
     test_chat_integration.py already learned the hard way - the system
-    prompt plus 36 tool schemas is thousands of tokens per call, and two
+    prompt plus 37 tool schemas is thousands of tokens per call, and two
     live tests inside the same minute exhausted the free-tier quota, so
     the second failed for reasons unrelated to the code.
 

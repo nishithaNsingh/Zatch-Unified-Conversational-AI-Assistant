@@ -44,7 +44,7 @@
 | **Deals / discounted products** | "Any offers?" is a top-5 question | Small — one new tool | ✅ Done — `get_discounted_products` |
 | **Best-coupon finder** for the cart | Directly lifts conversion | Medium | Coupon validity check exists |
 | **Bargaining coach** — "offer ₹X, likely accepted" | Unique to Zatch; no big marketplace has it | Medium | Bargain tools exist |
-| **Compare two products** | Standard on Amazon / Flipkart | Small | Missing |
+| **Compare two products** | Standard on Amazon / Flipkart | Small | ✅ Done — `compare_products` |
 | **Complete the look** — bought-together items | Bigger baskets | Medium | Similar-products search exists |
 | **Size help** — "which size for a 32-inch waist?" | Fewer returns, a major cost in fashion | Medium — needs seller size charts | Missing |
 | **Personal picks** from browsing and purchase history | Better recommendations | Medium–Large | Basic version exists |

@@ -73,7 +73,7 @@ from app.repos import products_repo
 logger = structlog.get_logger()
 
 # Lowered from 5 after measuring: every round re-sends the full prompt
-# and all 36 tool schemas, so the cap is a direct multiplier on token
+# and all 37 tool schemas, so the cap is a direct multiplier on token
 # spend. Nothing in the real conversations we tested needed more than
 # two rounds, and a model still confused after three is not going to
 # resolve it on the fourth - it just costs another full prompt.
@@ -300,6 +300,8 @@ SEARCH: if the user NAMES a product, call search_products_by_name - never guess 
 
 SEARCH RESULTS ARE CANDIDATES: product searches always return their closest matches, even when nothing fits. Show only products whose name actually is what was asked for - a saree or a jeans is not sleepwear. If a name search finds nothing for a DESCRIPTION rather than a product name ("summer cotton shirt"), try search_products_semantically once. If none fit, say plainly Zatch doesn't have that right now, in one line, and do not list the rest or offer to search for things no lookup showed exist.
 
+COMPARE: "compare X and Y", "which is better", "what is the difference" -> resolve BOTH names in the same round with search_products_by_name, then call compare_products with both ids. Report only the differences the tool returns - the catalogue ranks nothing, so say which is cheaper, better discounted or sooner, and let the shopper choose. Never declare an overall winner. Give one short line per product, then the differences.
+
 OFFERS: "any offers", "deals", "discounts", "what's on sale" -> get_discounted_products. Nearly every product carries some discount, so call these the biggest current reductions, never the only offers, and quote the count the tool gives you if the user asks how many.
 
 BROWSING: when the user wants something to buy but says nothing about what ("what should I buy"), call get_recommendations and show what comes back, then offer to narrow - do not open with questions, it needs no arguments and always returns something. This is the LAST resort: a described need ("something warm") is search_products_semantically, and asking what is trending or popular is get_trending_products.
@@ -520,6 +522,7 @@ _TOOL_STATUS = {
     "search_products_by_name": "Searching the catalogue",
     "search_products_semantically": "Searching the catalogue",
     "find_similar_products": "Finding similar products",
+    "compare_products": "Putting them side by side",
     "get_product_detail": "Reading the product details",
     "get_variant_stock": "Checking stock",
     "get_trending_products": "Finding what is trending",

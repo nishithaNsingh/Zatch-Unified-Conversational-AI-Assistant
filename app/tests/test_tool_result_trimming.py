@@ -21,6 +21,7 @@ FLOW:
     Pure unit tests over the trimmer functions. No database, no LLM.
 """
 
+import json
 from datetime import datetime, timedelta, timezone
 
 from app.agent.tool_executor import _trim_order_history, _trim_product_list
@@ -334,3 +335,76 @@ def _async(value):
     async def _run():
         return value
     return _run()
+
+
+class TestComparisonTrimming:
+    """A comparison is made of arithmetic, and the model cannot be trusted
+    with arithmetic - so the differences arrive computed."""
+
+    def _result(self, a_price=2999, a_disc=1999, a_days=7, b_price=1499, b_disc=1199, b_days=3):
+        return {
+            "compared": [
+                {"productId": "a" * 24, "name": "Obsidian Gold Smart watch", "price": a_price,
+                 "discountedPrice": a_disc, "condition": "New", "category": "men-accessories",
+                 "colors": ["gold"], "sizes": [], "inStock": True, "totalStock": 5,
+                 "description": "x" * 900,
+                 "shipping": {"estimatedDeliveryDays": a_days, "shippingFee": 99,
+                              "freeShipping": False, "codAvailable": False,
+                              "returnPolicy": "7 days return policy"}},
+                {"productId": "b" * 24, "name": "Noise Colorfit Icon Buzz", "price": b_price,
+                 "discountedPrice": b_disc, "condition": "New", "category": "men-accessories",
+                 "colors": ["black"], "sizes": [], "inStock": True, "totalStock": 4,
+                 "description": "short", "shipping": {"estimatedDeliveryDays": b_days,
+                                                      "shippingFee": 99}},
+            ],
+            "notFound": [],
+        }
+
+    def test_the_differences_are_computed(self):
+        from app.agent.tool_executor import _trim_comparison
+        out = _trim_comparison(self._result())
+        assert out["differences"]["cheaper"] == "Noise Colorfit Icon Buzz"
+        assert out["differences"]["arrivesSooner"] == "Noise Colorfit Icon Buzz"
+        # 33% off vs 20% off - the deeper discount is the pricier watch.
+        assert out["differences"]["biggestDiscount"] == "Obsidian Gold Smart watch"
+
+    def test_each_row_carries_its_own_saving(self):
+        from app.agent.tool_executor import _trim_comparison
+        rows = _trim_comparison(self._result())["compared"]
+        assert (rows[0]["saving"], rows[0]["discountPercent"]) == (1000, 33)
+        assert (rows[1]["saving"], rows[1]["discountPercent"]) == (300, 20)
+
+    def test_a_tie_is_not_reported_as_a_difference(self):
+        """'Both ₹1,999' must never become 'the first is cheaper'."""
+        from app.agent.tool_executor import _trim_comparison
+        out = _trim_comparison(self._result(a_price=2999, a_disc=1999, b_price=2999, b_disc=1999,
+                                            a_days=7, b_days=7))
+        assert "cheaper" not in out["differences"]
+        assert "arrivesSooner" not in out["differences"]
+
+    def test_long_descriptions_are_clipped(self):
+        from app.agent.tool_executor import _trim_comparison, COMPARE_DESCRIPTION_CHARS
+        rows = _trim_comparison(self._result())["compared"]
+        assert len(rows[0]["description"]) == COMPARE_DESCRIPTION_CHARS + 1  # plus the ellipsis
+        assert rows[1]["description"] == "short"
+
+    def test_no_winner_is_declared(self):
+        from app.agent.tool_executor import _trim_comparison
+        out = _trim_comparison(self._result())
+        assert set(out["differences"]) <= {"cheaper", "biggestDiscount", "arrivesSooner"}
+        assert "better" not in json.dumps(out).lower()
+
+    def test_a_missing_product_is_reported_not_hidden(self):
+        from app.agent.tool_executor import _trim_comparison
+        out = _trim_comparison({"compared": [], "notFound": ["c" * 24]})
+        assert out["notFound"] == ["c" * 24]
+
+    def test_no_image_urls_survive(self):
+        from app.agent.tool_executor import _trim_comparison
+        out = _trim_comparison(self._result())
+        assert "b-cdn" not in json.dumps(out)
+
+    def test_both_products_become_tappable_cards(self):
+        from app.agent.tool_executor import _product_cards, _trim_comparison
+        cards = _product_cards("compare_products", _trim_comparison(self._result()))
+        assert [c["product_id"] for c in cards] == ["a" * 24, "b" * 24]

@@ -25,7 +25,7 @@ WHAT A CASE HAS TO SATISFY:
     there.
 
 ON QUOTA:
-    Every case is a full conversation: system prompt plus 36 tool
+    Every case is a full conversation: system prompt plus 37 tool
     schemas, times however many tool rounds it takes. The live tests in
     this repo already recorded what happens when several of those land
     inside one minute, so the runner paces itself between cases and can
@@ -112,19 +112,26 @@ class Result:
         return out
 
 
-async def pick_fixtures() -> str:
-    """A real product name for the {product} cases.
+async def pick_fixtures() -> tuple[str, str]:
+    """Two real product names, for the {product} and {product2} cases.
 
     Chosen the way the demo chips are - long enough to be a thing rather
     than a colour, short enough to be one product - so a case never
     depends on a name that has since been delisted.
+
+    TWO, AND DIFFERENT. The comparison case needs a second product, and
+    "compare X and X" would score a correct tool as a failure.
     """
     docs = await products_repo.get_trending_products(limit=8)
-    for doc in docs:
-        name = (doc.get("name") or "").strip()
-        if 8 <= len(name) <= 38:
-            return name
-    return (docs[0].get("name") or "").strip() if docs else "kurta"
+    names = [
+        name for doc in docs
+        if 8 <= len((name := (doc.get("name") or "").strip())) <= 38
+    ]
+    if not names:
+        names = [(doc.get("name") or "").strip() for doc in docs] or ["kurta"]
+    first = names[0]
+    second = next((n for n in names if n.lower() != first.lower()), first)
+    return first, second
 
 
 async def run_case(
@@ -216,8 +223,8 @@ async def run(
     checkpoint: str | None = None,
     judge: bool = False,
 ) -> list[Result]:
-    product = await pick_fixtures()
-    cases = resolve(CASES, product)
+    product, second_product = await pick_fixtures()
+    cases = resolve(CASES, product, second_product)
     if only:
         cases = [c for c in cases if c.id in only]
     if limit:

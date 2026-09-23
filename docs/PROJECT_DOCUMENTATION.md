@@ -8,7 +8,7 @@
 | **Live demo** | https://zatch-unified-conversational-ai-assistant.onrender.com/demo |
 | **Repository** | https://github.com/rutujamurkute1-sudam/Zatch-Unified-Conversational-AI-Assistant (private) |
 | **Health** | https://zatch-unified-conversational-ai-assistant.onrender.com/health |
-| **Tests** | 736 passing · 53-case scored quality suite |
+| **Tests** | 773 passing · 54-case scored quality suite |
 | **Status** | Live demo on real data · **not yet integrated** with the Zatch mobile app |
 
 ---
@@ -93,7 +93,7 @@ flowchart LR
         API[Routes<br/>chat.py] --> AUTH[JWT verify<br/>+ rate limit]
         AUTH --> SESS[(Session store<br/>Redis / in-process)]
         AUTH --> ORCH[Orchestrator<br/>tool-calling loop]
-        ORCH <-->|prompt + 36 tool schemas| LLM
+        ORCH <-->|prompt + 37 tool schemas| LLM
         ORCH --> EXEC[Tool executor<br/>injects user_id · trims results]
         EXEC --> REPOS[Repositories<br/>allowlist + sanitizer]
         ORCH --> GUARD[Post-checks<br/>scope · grounding]
@@ -122,7 +122,7 @@ A single question, step by step:
 4. **History.** Prior turns are loaded, keyed by `user_id` **and**
    `session_id`, so a guessed session id cannot read someone else's
    conversation.
-5. **The orchestrator** sends the system prompt, the conversation and 36 tool
+5. **The orchestrator** sends the system prompt, the conversation and 37 tool
    schemas to the LLM.
 6. **The LLM chooses tools**, e.g. `get_order_history` or
    `search_products_by_name`. Independent calls in one round run in parallel.
@@ -215,6 +215,18 @@ saving and percentage computed server-side.
 **141 of 143 products carry some discount**, so the tool also returns that total
 and the model is told to describe the list as the biggest current reductions
 rather than as the only offers.
+
+### 3.3c Compare products
+
+"Compare X and Y", "which is better", "what's the difference" - two to four
+products side by side from their listings: price, discount, delivery, stock,
+colours and sizes. Both names are resolved in one round, then `compare_products`
+returns them together.
+
+The differences that the data supports - cheaper, bigger discount, arrives
+sooner - are computed server-side; a tie is reported as no difference rather
+than a winner. **No overall verdict is given**: nothing in a listing ranks one
+product against another, so a recommendation would be invented.
 
 ### 3.4 Order tracking and history
 
@@ -366,7 +378,7 @@ customer questions, so forgetting to configure it fails closed.
 |---|---|---|
 | Full pytest suite | **670 passed**, 8 live-API tests deselected | Locally (needs Atlas IP access) |
 | Hermetic subset | **560 passed** | GitHub Actions on every push |
-| Scored quality suite | **53 cases**; last full run 45/45 (before 6 cases were added) | On demand, against the real model |
+| Scored quality suite | **54 cases**; last full run 45/45 (before 6 cases were added) | On demand, against the real model |
 
 The database-dependent tests are marked automatically from fixture usage, so
 the CI split cannot drift. CI also builds the Docker image and asserts it runs
@@ -374,7 +386,7 @@ as a non-root user with no `.env` inside.
 
 ### What the quality suite measures
 
-Each of the 53 cases scores whether the assistant **looked in the right
+Each of the 54 cases scores whether the assistant **looked in the right
 place**, **avoided forbidden routes**, **invented nothing**, and **respected
 scope in both directions** (refusing off-topic questions *and* not refusing
 in-scope ones). Results are compared run-to-run so a prompt change that fixes

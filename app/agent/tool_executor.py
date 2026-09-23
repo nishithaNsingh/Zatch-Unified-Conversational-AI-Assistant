@@ -161,6 +161,96 @@ def _trim_deals(products: list) -> list:
     return rows
 
 
+# Enough of a description to say what a thing IS, without carrying a
+# seller's full sales pitch twice over. One real listing runs to 1,900
+# characters; two of those is most of a comparison's budget spent on
+# prose the answer will not quote.
+COMPARE_DESCRIPTION_CHARS = 300
+
+
+def _trim_comparison(result: dict | None) -> dict | None:
+    """The compared products, with the differences worked out.
+
+    THE MODEL CANNOT BE TRUSTED WITH THE ARITHMETIC, and a comparison is
+    made of arithmetic: which is cheaper, by how much, which is discounted
+    more deeply, which arrives sooner. Same lesson as daysLate on orders
+    and discountPercent on deals - whatever can be computed, is, before
+    the model sees it.
+
+    ONLY DIFFERENCES THE DATA SUPPORTS. There is no overall winner here:
+    nothing in a listing ranks one watch against another, and inventing a
+    verdict is exactly the failure this project exists to avoid.
+    """
+    if not isinstance(result, dict):
+        return result
+
+    rows = []
+    for item in result.get("compared") or []:
+        price = item.get("price")
+        discounted = item.get("discountedPrice")
+        shipping = item.get("shipping") or {}
+        description = (item.get("description") or "").strip()
+        row = {
+            "product_id": item.get("productId"),
+            "name": item.get("name"),
+            "price": price,
+            "discountedPrice": discounted,
+            "condition": item.get("condition"),
+            "category": item.get("category"),
+            "colors": item.get("colors") or [],
+            "sizes": item.get("sizes") or [],
+            "inStock": item.get("inStock"),
+            "totalStock": item.get("totalStock"),
+            "deliveryDays": shipping.get("estimatedDeliveryDays"),
+            "shippingFee": shipping.get("shippingFee"),
+            "freeShipping": shipping.get("freeShipping"),
+            "codAvailable": shipping.get("codAvailable"),
+            "returnPolicy": shipping.get("returnPolicy"),
+            "description": (
+                description[:COMPARE_DESCRIPTION_CHARS] + "…"
+                if len(description) > COMPARE_DESCRIPTION_CHARS
+                else description
+            ),
+        }
+        if isinstance(price, (int, float)) and isinstance(discounted, (int, float)) and price > 0:
+            row["saving"] = round(price - discounted, 2)
+            row["discountPercent"] = round((price - discounted) / price * 100)
+        rows.append(row)
+
+    out = {"compared": rows, "notFound": result.get("notFound") or []}
+    if result.get("error"):
+        out["error"] = result["error"]
+    if out["notFound"]:
+        # BESIDE THE DATA, NOT IN THE PROMPT. The same sentence tried as a
+        # prompt rule measurably broke the working case: all three live
+        # comparisons started reporting one product instead of two. An
+        # instruction that only applies when a product is missing belongs
+        # in the result that is missing it.
+        out["instruction"] = (
+            "One of the products asked about was not found. Say so, naming it, "
+            "and still report what you have on the other."
+        )
+
+    def _best(field, pick):
+        have = [r for r in rows if isinstance(r.get(field), (int, float))]
+        if len(have) < 2:
+            return None
+        best = pick(have, key=lambda r: r[field])
+        # A tie is not a difference, and reporting one as though it were
+        # is how "both ₹1,999" becomes "the first is cheaper".
+        if sum(1 for r in have if r[field] == best[field]) > 1:
+            return None
+        return best["name"]
+
+    differences = {
+        "cheaper": _best("discountedPrice", min),
+        "biggestDiscount": _best("discountPercent", max),
+        "arrivesSooner": _best("deliveryDays", min),
+    }
+    out["differences"] = {k: v for k, v in differences.items() if v}
+    return out
+
+
 def _trim_product_detail(detail: dict | None) -> dict | None:
     """Used for get_product_detail - keeps the fields PDF §4.4's spec
     needs, drops raw image URLs and per-variant image arrays (the LLM
@@ -532,6 +622,7 @@ _TRIMMERS = {
     "get_order_history": _trim_order_history,
     "search_products": _trim_product_list,
     "get_discounted_products": _trim_deals,
+    "compare_products": _trim_comparison,
     "get_trending_products": _trim_product_list,
     "get_recommendations": _trim_product_list,
     "get_product_detail": _trim_product_detail,
@@ -664,6 +755,9 @@ _SEARCH_QUERY_ARG = {
 _PRODUCT_LIST_SOURCES = {
     "search_products": None,
     "get_discounted_products": "deals",
+    # Both compared products are tappable - a comparison that cannot be
+    # acted on is a dead end.
+    "compare_products": "compared",
     "search_products_by_name": None,
     "search_products_semantically": "closestByMeaning",
     "find_similar_products": None,
