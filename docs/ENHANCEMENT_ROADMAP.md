@@ -85,7 +85,7 @@
 |---|---|---|
 | **Analytics dashboard** — top questions, unanswered questions, card taps, chat-to-purchase rate | Proves ROI to management; shows what to build next | Medium |
 | **"Not found" demand report** — e.g. sleepwear searched, none in stock | Tells the business what to stock, from real demand | Small, high value |
-| **Catalogue quality report** — listings named "test" or "hi", missing materials, ₹5 prices | Bad listings make the bot look bad | Small |
+| **Catalogue quality report** — listings named "test" or "hi", missing materials, ₹5 prices | Bad listings make the bot look bad | ✅ Done — `scripts/catalogue_quality.py` (54 of 143 flagged on first run) |
 | **Seller assistant** — sales, payouts, pending bargains | Sellers matter as much as buyers | Medium — `seller_repo` partly built |
 
 ---
