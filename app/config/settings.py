@@ -272,6 +272,26 @@ class Settings(BaseSettings):
                     "stored documents - a mismatch is rejected by Atlas.",
     )
 
+    # HOW LONG THE MODEL THINKS BEFORE WRITING, and why the default is
+    # not Azure's.
+    #
+    # gpt-5-mini reasons before it answers, and Azure's default ("medium")
+    # spends most of a reply's latency there. Measured over six real
+    # questions: medium averaged 12.2s, "low" 7.5s for answers that were
+    # indistinguishable, and "minimal" 4.3s for answers that were visibly
+    # worse - it stopped searching for a named product and asked a
+    # question back instead, dropped the order list from a refund request,
+    # and printed an internal order id the prompt forbids.
+    #
+    # So "low" is the default: the whole of the saving that costs nothing.
+    # Set to "minimal", "medium" or "high" to override, or "" to send
+    # nothing and take the provider's own default.
+    azure_reasoning_effort: str = Field(
+        default="low",
+        description="Reasoning budget for Azure gpt-5 models: minimal, low, "
+                    "medium, high, or empty to leave it to the provider.",
+    )
+
     azure_openai_api_version: str = Field(
         default="2024-12-01-preview",
         description="Azure pins API behaviour to a dated version string.",

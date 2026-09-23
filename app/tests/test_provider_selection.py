@@ -300,3 +300,48 @@ class TestTheFlagIsNotWhatProtectsUs:
         """
         configured(mongodb_database="zatch")
         assert [p.name for p in llm_client.get_providers()] == ["azure"]
+
+
+class TestReasoningEffort:
+    """How long gpt-5 thinks before answering is a latency setting, and it
+    must reach ONLY the models that understand the parameter.
+
+    Measured over six real questions: Azure's default ("medium") averaged
+    12.2s an answer, "low" 7.5s for answers that were indistinguishable.
+    "minimal" was faster again and visibly worse, so it is not the default.
+    """
+
+    def _payload(self, provider):
+        from app.agent.llm_client import _build_payload
+        return _build_payload(provider, [{"role": "user", "content": "hi"}], [], "auto")
+
+    def test_azure_gpt5_asks_for_low_effort_by_default(self, monkeypatch):
+        from app.agent.llm_client import Provider
+        provider = Provider("azure", "https://x.openai.azure.com", "gpt-5-mini", "k", kind="azure")
+        assert self._payload(provider)["reasoning_effort"] == "low"
+
+    def test_other_providers_never_receive_it(self, monkeypatch):
+        # Groq and Gemini reject an unknown field with a 400 - sending it
+        # would take a working fallback down in the name of speed.
+        from app.agent.llm_client import Provider
+        provider = Provider("groq", "https://api.groq.com", "llama-3.3-70b", "k")
+        assert "reasoning_effort" not in self._payload(provider)
+
+    def test_a_non_reasoning_azure_deployment_never_receives_it(self):
+        from app.agent.llm_client import Provider
+        provider = Provider("azure", "https://x.openai.azure.com", "gpt-4o", "k", kind="azure")
+        assert "reasoning_effort" not in self._payload(provider)
+
+    def test_an_empty_setting_leaves_it_to_the_provider(self, monkeypatch):
+        from app.agent.llm_client import Provider
+        from app.config.settings import get_settings
+        monkeypatch.setattr(get_settings(), "azure_reasoning_effort", "", raising=False)
+        provider = Provider("azure", "https://x.openai.azure.com", "gpt-5-mini", "k", kind="azure")
+        assert "reasoning_effort" not in self._payload(provider)
+
+    def test_the_setting_is_what_is_sent(self, monkeypatch):
+        from app.agent.llm_client import Provider
+        from app.config.settings import get_settings
+        monkeypatch.setattr(get_settings(), "azure_reasoning_effort", "high", raising=False)
+        provider = Provider("azure", "https://x.openai.azure.com", "gpt-5-mini", "k", kind="azure")
+        assert self._payload(provider)["reasoning_effort"] == "high"

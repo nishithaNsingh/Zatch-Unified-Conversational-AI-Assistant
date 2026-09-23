@@ -8,7 +8,7 @@
 | **Live demo** | https://zatch-unified-conversational-ai-assistant.onrender.com/demo |
 | **Repository** | https://github.com/rutujamurkute1-sudam/Zatch-Unified-Conversational-AI-Assistant (private) |
 | **Health** | https://zatch-unified-conversational-ai-assistant.onrender.com/health |
-| **Tests** | 670 passing · 45-case scored quality suite, last full run 45/45 |
+| **Tests** | 681 passing · 51-case scored quality suite |
 | **Status** | Live demo on real data · **not yet integrated** with the Zatch mobile app |
 
 ---
@@ -310,7 +310,7 @@ Every figure, product and order comes from a database lookup.
 |---|---|---|
 | Full pytest suite | **670 passed**, 8 live-API tests deselected | Locally (needs Atlas IP access) |
 | Hermetic subset | **560 passed** | GitHub Actions on every push |
-| Scored quality suite | **48 cases**; last full run 45/45 (before 3 product-fact cases were added) | On demand, against the real model |
+| Scored quality suite | **51 cases**; last full run 45/45 (before 6 cases were added) | On demand, against the real model |
 
 The database-dependent tests are marked automatically from fixture usage, so
 the CI split cannot drift. CI also builds the Docker image and asserts it runs
@@ -318,7 +318,7 @@ as a non-root user with no `.env` inside.
 
 ### What the quality suite measures
 
-Each of the 48 cases scores whether the assistant **looked in the right
+Each of the 51 cases scores whether the assistant **looked in the right
 place**, **avoided forbidden routes**, **invented nothing**, and **respected
 scope in both directions** (refusing off-topic questions *and* not refusing
 in-scope ones). Results are compared run-to-run so a prompt change that fixes
@@ -472,7 +472,7 @@ Ordered by what blocks production first.
 | 17 | **Scope-check blind spot** | An off-topic claim with no proper noun inside an otherwise grounded reply can pass the mechanical check (the prompt remains the primary defence). Documented in `tests/test_scope.py`. |
 | 18 | **Seller-side features unwired** | `seller_repo` (payouts, sales, coupon performance, pending bargains) is built and tested but not exposed; wiring must keep `seller_id` out of tool parameters. |
 | 19 | **CORS** | None today — correct for the native app and the same-origin demo. Add an explicit allow-list only if a web client on another origin is introduced. |
-| 20 | **Latency** | ~8 s for one lookup, ~17 s for two rounds. Streaming status messages fill the wait; further reduction would need a faster model or fewer tool rounds. |
+| 20 | **Latency** | ~4-7 s typical since `azure_reasoning_effort` was set to "low" (measured: 12.9 s -> 6.7 s for an order lookup). Further reduction needs fewer tool rounds or a faster model. |
 
 ### Production go-live checklist
 

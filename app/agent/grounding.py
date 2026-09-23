@@ -181,6 +181,11 @@ _NAME_TOKEN = re.compile(r"[a-z0-9]+")
 _NAME_FILLER = frozenset({"the", "and", "for", "with", "size", "new"})
 _LINE_LEAD = re.compile(r"\s[—–-]\s|,|:|\(|₹")
 
+# Scripts this module's English word lists cannot judge - Devanagari
+# (Hindi/Marathi), Bengali, Gujarati, Tamil, Telugu, Kannada, Malayalam,
+# Odia, Gurmukhi. See the note in unexplained_answer.
+_NON_LATIN = re.compile(r"[ऀ-ൿ]")
+
 
 def _name_tokens(text: str) -> list[str]:
     return _NAME_TOKEN.findall((text or "").lower())
@@ -757,6 +762,22 @@ def unexplained_answer(
     if tools_ran or (words & overlap):
         return None
     if words & DOMAIN_VOCABULARY or words & ACKNOWLEDGEMENTS:
+        return None
+
+    # A REPLY THIS CHECK CANNOT READ IS NOT EVIDENCE OF ANYTHING.
+    #
+    # Every signal above is built from Latin words: _words() matches
+    # [A-Za-z]+, and the vocabulary is English. A correct Hindi answer
+    # therefore has no domain word by construction, and was suppressed for
+    # it - measured, "refund kaise milega?" and "क्या मैं इस पर मोलभाव कर
+    # सकता हूँ?" both came back as the off-topic refusal.
+    #
+    # Suppressing a correct answer is the failure users actually feel, so
+    # signal 1 stands down for non-Latin text rather than guessing. The
+    # proper-noun scan above has ALREADY run and is unaffected: it reads
+    # capitalised Latin names, which a Hindi reply smuggling in "the
+    # capital of France is Paris" still contains.
+    if _NON_LATIN.search(text):
         return None
 
     return (

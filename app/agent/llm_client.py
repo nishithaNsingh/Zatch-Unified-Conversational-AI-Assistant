@@ -592,6 +592,13 @@ def _build_payload(
         payload["tools"] = tools
         payload["tool_choice"] = tool_choice
 
+    # ONLY THE MODELS THAT UNDERSTAND IT. reasoning_effort is a gpt-5
+    # parameter; Groq and Gemini reject an unknown field with a 400, which
+    # would take a working fallback provider down in the name of speed.
+    effort = (get_settings().azure_reasoning_effort or "").strip()
+    if effort and provider.kind == "azure" and "gpt-5" in (provider.model or "").lower():
+        payload["reasoning_effort"] = effort
+
     return payload
 
 

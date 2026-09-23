@@ -755,3 +755,33 @@ class TestSuppressingIsNarrowerThanDetecting:
         assert grounded_in_conversation(
             "Korean Style Texture Shirts - 649.", similar_history
         )
+
+
+class TestOtherLanguages:
+    """Hindi and Hinglish are how a large share of Indian shoppers write.
+
+    Measured before this: "refund kaise milega?" and the Devanagari
+    bargaining question both came back as the off-topic refusal, because
+    every signal in unexplained_answer is built from English words and a
+    Hindi reply has none by construction.
+    """
+
+    def test_a_hindi_reply_is_not_called_off_topic(self):
+        # A correct answer about delivery, in Devanagari, with no tool.
+        reply = "आपका ऑर्डर कल डिलीवर हो जाएगा।"
+        assert unexplained_answer(reply, tools_ran=False) is None
+
+    def test_hinglish_keeps_working_through_its_english_words(self):
+        reply = "Aapka order kal deliver ho jayega."
+        assert unexplained_answer(reply, tools_ran=False) is None
+
+    def test_a_latin_name_inside_a_hindi_reply_is_still_caught(self):
+        # The hole this must NOT open: an off-topic claim wearing Hindi.
+        reply = "ज़ैच पर वह नहीं है, लेकिन France की राजधानी Paris है।"
+        finding = unexplained_answer(reply, tools_ran=False)
+        assert finding and "Paris" in finding
+
+    def test_an_english_reply_about_nothing_is_still_caught(self):
+        assert unexplained_answer(
+            "Boil the pasta for eight minutes.", tools_ran=False
+        ) is not None

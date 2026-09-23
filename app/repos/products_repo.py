@@ -44,6 +44,7 @@ MECHANISM:
 """
 
 import re
+from time import monotonic
 
 import structlog
 from pymongo.errors import OperationFailure
@@ -81,6 +82,11 @@ VECTOR_INDEX = "product_vector_index"  # Atlas Vector Search, 384-dim cosine
 # definition rather than guessed - searching a path the index does not
 # map returns nothing, silently.
 TEXT_SEARCH_PATHS = ["name", "tags", "searchKeywords", "category", "subCategory"]
+
+# The category vocabulary the system prompt is built from, cached per
+# process. See get_distinct_categories.
+CATEGORY_CACHE_SECONDS = 600
+_CATEGORY_CACHE: tuple[float, dict] | None = None
 
 
 def _case_insensitive_exact(value: str) -> dict:
@@ -290,14 +296,36 @@ async def get_distinct_categories() -> dict:
     discovered uses different naming (e.g. "Home Decor" vs the real
     products.category value "Home"). This is what Phase 6/7 should
     ground the LLM's filter extraction against, since it matches
-    exactly what search_products() filters on."""
+    exactly what search_products() filters on.
+
+    CACHED FOR THE PROCESS, because the system prompt embeds these values
+    and is rebuilt on EVERY message: two distinct() calls against Atlas,
+    measured at ~60ms, on the critical path of every single answer. The
+    catalogue's category vocabulary changes when a seller adds a product
+    in a category nobody has used before - rare, and a restart or the TTL
+    below picks it up.
+    """
+    global _CATEGORY_CACHE
+    cached = _CATEGORY_CACHE
+    if cached is not None and (monotonic() - cached[0]) < CATEGORY_CACHE_SECONDS:
+        return cached[1]
+
     db = get_database()
     categories = await db[COLLECTION].distinct("category")
     sub_categories = await db[COLLECTION].distinct("subCategory")
-    return {
+    result = {
         "categories": sorted(c for c in categories if c),
         "subCategories": sorted(s for s in sub_categories if s),
     }
+    _CATEGORY_CACHE = (monotonic(), result)
+    return result
+
+
+def reset_category_cache() -> None:
+    """Drop the cached vocabulary - for tests, and for a caller that has
+    just changed the catalogue and wants the next prompt to see it."""
+    global _CATEGORY_CACHE
+    _CATEGORY_CACHE = None
 
 async def get_products_by_ids(product_ids: list) -> list[dict]:
     """Batch lookup - turns a list of product ObjectIds (e.g. from a

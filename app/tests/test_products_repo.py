@@ -57,3 +57,42 @@ class TestGetSellerInfo:
         result = await products_repo.get_seller_info(str(real_product_with_variants["_id"]))
         assert result is not None
         assert "businessName" in result
+
+class TestCategoryCache:
+    """The system prompt embeds the real category vocabulary and is rebuilt
+    on every message, so these two distinct() calls sat on the critical
+    path of every answer (~60ms). Cached per process instead."""
+
+    async def test_the_second_call_does_not_query_again(self, monkeypatch):
+        from app.repos import products_repo
+        products_repo.reset_category_cache()
+        calls = []
+
+        class FakeCollection:
+            async def distinct(self, field):
+                calls.append(field)
+                return ["Men", "Women"] if field == "category" else ["shorts"]
+
+        monkeypatch.setattr(products_repo, "get_database", lambda: {"products": FakeCollection()})
+        first = await products_repo.get_distinct_categories()
+        second = await products_repo.get_distinct_categories()
+        assert first == second == {"categories": ["Men", "Women"], "subCategories": ["shorts"]}
+        assert calls == ["category", "subCategory"]  # queried once, not twice
+        products_repo.reset_category_cache()
+
+    async def test_resetting_makes_it_query_again(self, monkeypatch):
+        from app.repos import products_repo
+        products_repo.reset_category_cache()
+        calls = []
+
+        class FakeCollection:
+            async def distinct(self, field):
+                calls.append(field)
+                return []
+
+        monkeypatch.setattr(products_repo, "get_database", lambda: {"products": FakeCollection()})
+        await products_repo.get_distinct_categories()
+        products_repo.reset_category_cache()
+        await products_repo.get_distinct_categories()
+        assert len(calls) == 4
+        products_repo.reset_category_cache()
