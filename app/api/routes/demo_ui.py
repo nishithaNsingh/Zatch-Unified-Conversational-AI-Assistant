@@ -345,6 +345,15 @@ PAGE = r"""
     padding:1px 4px; border-radius:5px;
   }
   .meta .copy:hover { color:var(--text); background:var(--surface); }
+  /* Thumbs sit in the same footnote row as the timing and the "checked"
+     source - a rating is a note about the answer, not part of it. */
+  .meta .rate {
+    background:none; border:0; color:var(--faint); cursor:pointer; font-size:12px;
+    padding:1px 4px; border-radius:5px; line-height:1;
+  }
+  .meta .rate:hover { color:var(--text); background:var(--surface); }
+  .meta .rate.on { color:var(--accent); }
+  .meta .thanks { color:var(--accent-dim); }
 
   /* Product rows. Tapping expands in place rather than navigating:
      zatch.shop has no product pages, so a link would go nowhere. In the
@@ -875,7 +884,7 @@ function renderChat() {
       }
       if (m.products) productCards(m.products);
       if (m.bits) bitCards(m.bits);
-      if (m.meta) metaLine(m.meta.timing, m.meta.checked);
+      if (m.meta) metaLine(m.meta.timing, m.meta.checked, null, m, priorQuestion(m));
     }
   });
   // DEFERRED A FRAME, because every caller renders BEFORE showScreen().
@@ -890,6 +899,16 @@ function renderChat() {
   // of the previous conversation) while letting the scroll run once the
   // element actually has a height.
   requestAnimationFrame(() => stick(true));
+}
+
+function priorQuestion(msg) {
+  // The question this answer replied to - the one thing a reviewer needs
+  // beside a thumbs-down, and the client knows it without an index.
+  const i = thread.messages.indexOf(msg);
+  for (let j = i - 1; j >= 0; j--) {
+    if (thread.messages[j].role === "user") return thread.messages[j].text;
+  }
+  return null;
 }
 
 function welcome() {
@@ -909,6 +928,52 @@ function welcome() {
   STARTERS.forEach(s => chips.appendChild(chip(s, false)));
   w.append(h, chips);
   $("log").appendChild(w);
+}
+
+function rateButtons(msg, question) {
+  // WHY THE RATING LIVES ON THE MESSAGE. It is saved with the thread, so
+  // a named account reopening the conversation still sees which answers
+  // it rated - a thumb that resets on reload reads as one that was not
+  // recorded.
+  const wrap = document.createElement("span");
+  const mk = (value, glyph, label) => {
+    const b = document.createElement("button");
+    b.className = "rate" + (msg.rating === value ? " on" : "");
+    b.textContent = glyph;
+    b.title = label;
+    b.setAttribute("aria-label", label);
+    b.onclick = () => sendFeedback(msg, question, value, wrap);
+    return b;
+  };
+  wrap.append(mk("up", "👍", "This answer helped"),
+              mk("down", "👎", "This answer did not help"));
+  return wrap;
+}
+
+async function sendFeedback(msg, question, rating, wrap) {
+  if (msg.rating === rating) return;
+  msg.rating = rating;
+  // Drawn before the request, and not undrawn if it fails: the rating is
+  // already recorded in the server log line, and a thumb that springs
+  // back teaches people not to bother.
+  Array.from(wrap.children).forEach((b, i) => {
+    b.classList.toggle("on", (i === 0) === (rating === "up"));
+  });
+  upsertThread();
+  if (!wrap.parentElement.querySelector(".thanks")) {
+    const t = document.createElement("span");
+    t.className = "thanks";
+    t.textContent = "thanks";
+    wrap.parentElement.appendChild(t);
+  }
+  try {
+    await fetch("/chat/feedback", {
+      method: "POST",
+      headers: {"Content-Type": "application/json", "Authorization": "Bearer " + token},
+      body: JSON.stringify({session_id: thread.id, rating: rating,
+                            question: question || null, reply: msg.text || null}),
+    });
+  } catch (e) { /* the server log line is the record that matters */ }
 }
 
 function chip(text, isCatalogue) {
@@ -1104,7 +1169,7 @@ function showSource(bubble, text, label) {
   stick();
 }
 
-function metaLine(timing, checked, copyText) {
+function metaLine(timing, checked, copyText, msg, question) {
   const m = document.createElement("div");
   m.className = "meta";
   const t = document.createElement("span");
@@ -1127,6 +1192,9 @@ function metaLine(timing, checked, copyText) {
       }).catch(() => { btn.textContent = "press ⌘C"; });
     };
     m.appendChild(btn);
+  }
+  if (msg) {
+    m.appendChild(rateButtons(msg, question));
   }
   $("log").appendChild(m);
   stick();
@@ -1433,8 +1501,9 @@ async function send() {
       ? (firstToken / 1000).toFixed(1) + "s to first word · " + (ms / 1000).toFixed(1) + "s total"
       : (ms / 1000).toFixed(1) + "s";
     const src = checked.join(" · ");
-    metaLine(timing, src, bubble.textContent);
-    thread.messages.push({role: "bot", text: bubble.textContent, products, bits, attribution, meta: {timing, checked: src}});
+    const botMsg = {role: "bot", text: bubble.textContent, products, bits, attribution, meta: {timing, checked: src}};
+    thread.messages.push(botMsg);
+    metaLine(timing, src, bubble.textContent, botMsg, text);
     thread.updatedAt = Date.now();
     upsertThread();
 
@@ -1507,8 +1576,9 @@ async function send() {
       clearScaffolding();
       if (bubble) {
         bubble.classList.remove("writing");
-        thread.messages.push({role: "bot", text: bubble.textContent, meta: {timing: "stopped", checked: checked.join(" · ")}});
-        metaLine("stopped", checked.join(" · "), bubble.textContent);
+        const stoppedMsg = {role: "bot", text: bubble.textContent, meta: {timing: "stopped", checked: checked.join(" · ")}};
+        thread.messages.push(stoppedMsg);
+        metaLine("stopped", checked.join(" · "), bubble.textContent, stoppedMsg, text);
       } else {
         add("Stopped.", "msg err");
       }

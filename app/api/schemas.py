@@ -9,12 +9,30 @@ WHY THIS APPROACH:
     matching Phase 9.3's requirement.
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
     session_id: str = Field(..., min_length=1, max_length=200)
+
+
+class FeedbackRequest(BaseModel):
+    """One thumbs-up or thumbs-down on one reply.
+
+    THE CLIENT SENDS THE EXCHANGE, and the server checks it against that
+    user's stored session rather than trusting it. The alternative -
+    an index into the history - breaks the moment the store trims old
+    turns or the app still shows a reply whose session has expired, which
+    is exactly when somebody rates it.
+    """
+
+    session_id: str = Field(..., min_length=1, max_length=200)
+    rating: Literal["up", "down"]
+    question: str | None = Field(default=None, max_length=2000)
+    reply: str | None = Field(default=None, max_length=4000)
 
 
 class ProductCard(BaseModel):

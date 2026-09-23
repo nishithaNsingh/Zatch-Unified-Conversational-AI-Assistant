@@ -8,7 +8,7 @@
 | **Live demo** | https://zatch-unified-conversational-ai-assistant.onrender.com/demo |
 | **Repository** | https://github.com/rutujamurkute1-sudam/Zatch-Unified-Conversational-AI-Assistant (private) |
 | **Health** | https://zatch-unified-conversational-ai-assistant.onrender.com/health |
-| **Tests** | 694 passing · 53-case scored quality suite |
+| **Tests** | 715 passing · 53-case scored quality suite |
 | **Status** | Live demo on real data · **not yet integrated** with the Zatch mobile app |
 
 ---
@@ -281,6 +281,20 @@ rather than as the only offers.
 - LLM providers whose terms permit training on prompts are **automatically
   excluded** whenever real customer data is configured.
 
+### 3.10b Answer ratings (👍 / 👎)
+
+Every reply carries a thumbs-up and thumbs-down in its footnote row. A rating is
+stored with the question and the reply it refers to, so a review shows *what* was
+rated, not just a score.
+
+- The client sends the exchange; the server checks it against that user's stored
+  session and records whether it matched, so unverified client text is never
+  mistaken for something the server saw.
+- Stored in Redis (capped at 2,000 entries, 90-day TTL) — the database credential
+  is read-only by design. Every rating is also written to the service log.
+- `scripts/read_feedback.py` prints the positive rate and the exchanges behind
+  each thumbs-down.
+
 ### 3.11 Answer transparency
 
 - Under each reply: which sources were checked ("✓ checked your orders").
@@ -440,6 +454,7 @@ today, not a fault. Only `unavailable` sets `status: degraded`.
 | `POST /chat` | JSON request → JSON reply with `products`, `bits`, `attribution` |
 | `POST /chat/stream` | Same, as Server-Sent Events: `status`, `token`, `products`, `bits`, `attribution`, `done`, `error` |
 | `DELETE /chat/session/{id}` | Deletes one conversation (204) |
+| `POST /chat/feedback` | Records 👍/👎 on one reply (204) |
 | `GET /health` | Liveness and dependency status |
 | `GET /demo` (+ `/demo/*`) | Demo chat UI — disable in production |
 

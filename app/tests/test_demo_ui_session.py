@@ -424,5 +424,55 @@ class TestBitCardsUseTheProductCardComponent:
         assert "if (m.bits) bitCards(m.bits);" in PAGE
 
     def test_they_are_stored_on_the_message(self):
-        push = PAGE.split("thread.messages.push({role: \"bot\"")[1].split("}")[0]
-        assert "bits" in push
+        # The stored message is built as botMsg so the thumbs buttons can
+        # hang their rating on the same object - see rateButtons.
+        stored = PAGE.split('const botMsg = {role: "bot"')[1].split("}")[0]
+        assert "bits" in stored
+        assert "thread.messages.push(botMsg)" in PAGE
+
+
+class TestFeedbackButtons:
+    """👍/👎 on every reply - the only measure of whether an answer helped."""
+
+    def _fn(self, name):
+        return PAGE.split("function " + name + "(")[1].split("\n}")[0]
+
+    def test_both_buttons_are_drawn(self):
+        body = self._fn("rateButtons")
+        assert '"up"' in body and '"down"' in body
+        assert "aria-label" in body, "a thumb with no label is unreadable to a screen reader"
+
+    def test_they_are_attached_to_every_answer(self):
+        # The footnote row, beside the timing and the "checked" source.
+        assert "m.appendChild(rateButtons(msg, question));" in PAGE
+
+    def test_the_rating_is_sent_to_the_server(self):
+        body = self._fn("sendFeedback")
+        assert '"/chat/feedback"' in body
+        assert '"POST"' in body
+        assert "Bearer " in body, "the endpoint is authenticated like every other"
+        assert "session_id" in body and "reply" in body
+
+    def test_the_rating_is_stored_on_the_message(self):
+        # So reopening a saved conversation still shows what was rated.
+        assert "msg.rating = rating;" in self._fn("sendFeedback")
+        assert "upsertThread();" in self._fn("sendFeedback")
+
+    def test_a_failed_request_does_not_undo_the_thumb(self):
+        """The rating is already in the server's log line, and a thumb that
+        springs back teaches people not to bother."""
+        body = self._fn("sendFeedback")
+        assert "catch" in body
+        assert "classList.toggle" in body.split("try")[0], "drawn before the request"
+
+    def test_the_question_travels_with_the_rating(self):
+        # A thumbs-down with no question attached is unactionable.
+        assert "function priorQuestion(" in PAGE
+        assert "priorQuestion(m)" in PAGE
+
+    def test_it_sends_the_thread_id_as_the_session(self):
+        """The session the server knows this conversation by. An earlier
+        version sent an undefined variable, so every rating was rejected
+        while the UI still said "thanks"."""
+        body = PAGE.split("async function sendFeedback(")[1].split("\n}")[0]
+        assert "session_id: thread.id" in body

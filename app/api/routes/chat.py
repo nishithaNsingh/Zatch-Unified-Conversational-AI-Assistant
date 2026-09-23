@@ -41,8 +41,8 @@ from fastapi.responses import StreamingResponse
 
 from app.agent.orchestrator import FALLBACK_GENERIC, run_conversation
 from app.api.dependencies import rate_limited_user_id
-from app.api.schemas import ChatRequest, ChatResponse
-from app.memory import session_store
+from app.api.schemas import ChatRequest, ChatResponse, FeedbackRequest
+from app.memory import feedback_store, session_store
 
 logger = structlog.get_logger()
 
@@ -75,6 +75,70 @@ async def chat(request: ChatRequest, user_id: str = Depends(rate_limited_user_id
         reply=reply, session_id=request.session_id,
         products=products, bits=bits, attribution=attribution,
     )
+
+
+@router.post("/chat/feedback", status_code=204)
+async def chat_feedback(
+    request: FeedbackRequest,
+    user_id: str = Depends(rate_limited_user_id),
+):
+    """One thumbs-up or thumbs-down on one reply.
+
+    WHY THIS IS THE ONLY REAL QUALITY SIGNAL. The eval suite scores
+    questions we chose; grounding proves an answer traced to a lookup.
+    Neither says whether a shopper was helped. A rating does, and it is
+    the one number that improves as the assistant is used rather than as
+    we test it.
+
+    THE EXCHANGE IS CHECKED, NOT TRUSTED. The client sends the question
+    and reply it is rating; this looks for both in that user's stored
+    session and records whether they were found. Unverified feedback is
+    still kept - a session expires in 24 hours while the app may still be
+    showing the reply - but a reviewer can tell the difference between
+    "the server saw this exchange" and "a client said so".
+
+    204 EVEN WHEN THE STORE IS DOWN. The user tapped a thumb; an error
+    toast teaches them not to bother again, and the rating is in the log
+    line regardless. Storage failure is our problem, not theirs.
+    """
+    history = await session_store.get_session(user_id, request.session_id) or []
+    verified = _exchange_in_history(history, request.question, request.reply)
+
+    await feedback_store.record(
+        user_id=user_id,
+        session_id=request.session_id,
+        rating=request.rating,
+        question=request.question,
+        reply=request.reply,
+        verified=verified,
+    )
+    return None
+
+
+def _normalise(text: str | None) -> str:
+    r"""Text as it was MEANT, not as it was transported.
+
+    Line endings are normalised because a client that renders "\n" and
+    posts back "\r\n" has not changed the answer - measured on the
+    first live test, where exactly that marked a genuine exchange
+    unverified.
+    """
+    lines = (text or "").replace("\r\n", "\n").split("\n")
+    return "\n".join(line.rstrip() for line in lines).strip()
+
+
+def _exchange_in_history(history: list, question: str | None, reply: str | None) -> bool:
+    """Whether this user's own stored session contains what is being rated."""
+    if not history or not reply:
+        return False
+    said = {
+        _normalise(message.get("content"))
+        for message in history
+        if message.get("role") in ("user", "assistant")
+    }
+    if _normalise(reply) not in said:
+        return False
+    return not question or _normalise(question) in said
 
 
 @router.delete("/chat/session/{session_id}", status_code=204)

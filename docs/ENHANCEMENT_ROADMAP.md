@@ -73,7 +73,7 @@
 | **Faster replies** — fewer AI round trips, a faster model, instant answers for common questions | Long waits lose customers | Medium | Streaming status messages hide part of the wait |
 | **Hindi / Hinglish / regional languages** | Most Indian shoppers | Small–Medium — the model handles Hindi; needs testing | Untested |
 | **Voice input** | Common on mobile in India | Medium (app side) | Missing |
-| **👍 / 👎 on every reply** | The only real measure of answer quality | Small | Missing |
+| **👍 / 👎 on every reply** | The only real measure of answer quality | Small | ✅ Done — `POST /chat/feedback`, `scripts/read_feedback.py` |
 | **Tap-to-choose order buttons** instead of typing "last 4 digits" | Removes the confusion seen in manager testing | Small | Text only |
 | **Remember preferences across chats** — size, budget, style | Personal feel | Medium | Within one conversation only |
 
