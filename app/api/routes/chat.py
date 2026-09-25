@@ -65,16 +65,18 @@ async def chat(request: ChatRequest, user_id: str = Depends(rate_limited_user_id
     products: list = []
     attribution: list = []
     bits: list = []
+    orders: list = []
     reply, messages = await run_conversation(
         user_id, request.message, history=history,
         products_out=products, attribution_out=attribution,
-        bits_out=bits,
+        bits_out=bits, orders_out=orders,
     )
     await session_store.save_session(user_id, request.session_id, messages)
     await usage_store.record_question()
     return ChatResponse(
         reply=reply, session_id=request.session_id,
         products=products, bits=bits, attribution=attribution,
+        orders=orders,
     )
 
 
@@ -197,6 +199,9 @@ async def chat_stream(
       products  {"products": [{"product_id": "...", "name": "...", ...}]}
       bits      {"bits": [{"bit_id": "...", "title": "..."}]} - same
                 contract as products, for short videos
+      orders    {"orders": [{"order_id": "...", "last4": "1378", "item": "...",
+                 "status": "...", "late": false, "message": "..."}]} -
+                tap-to-choose buttons; a tap sends `message` as the next turn
       attribution {"claims": [{"start": 12, "end": 18, "text": "₹1,199",
                    "kind": "price", "tool": "get_order_history"}]}
       done      {"reply": "...", "session_id": "..."}

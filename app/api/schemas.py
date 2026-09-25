@@ -67,6 +67,24 @@ class BitCard(BaseModel):
     title: str | None = None
 
 
+class OrderChoice(BaseModel):
+    """One order the reply asked the shopper to choose between, for the
+    client to draw as a button.
+
+    Sent only when the reply lists two or more orders and asks which one.
+    A tap sends `message` as the next /chat message, exactly as if the
+    shopper had typed it - the conversation needs no other state, and the
+    server stays the single place those words are decided.
+    """
+
+    order_id: str
+    last4: str
+    item: str | None = None
+    status: str | None = None
+    late: bool = False
+    message: str
+
+
 class Attribution(BaseModel):
     """One claim in the reply, and the tool that vouched for it.
 
@@ -97,3 +115,5 @@ class ChatResponse(BaseModel):
     # deserialising this one unchanged.
     bits: list[BitCard] = Field(default_factory=list)
     attribution: list[Attribution] = Field(default_factory=list)
+    # Tap-to-choose buttons for "which order?". Defaulted like the rest.
+    orders: list[OrderChoice] = Field(default_factory=list)

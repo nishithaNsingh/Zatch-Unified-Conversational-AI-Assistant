@@ -228,6 +228,21 @@ sooner - are computed server-side; a tie is reported as no difference rather
 than a winner. **No overall verdict is given**: nothing in a listing ranks one
 product against another, so a recommendation would be invented.
 
+### 3.3d Complete the look
+
+"What goes with X", "complete the look" - `get_complete_the_look` returns
+active, in-stock products of the kinds that pair with X: trousers, a cap or a
+watch for a tee; a handbag or hair accessories for a saree. Taken one per kind
+in turn, ranked by saves, likes and views.
+
+**The pairing is an editorial rule by kind of product** (`COMPLEMENTS` in
+`products_repo.py`), not a claim about shoppers. The order data cannot supply
+one yet: 131 of 134 orders hold a single item and no two carts share a pair.
+Where two or more distinct shoppers really did buy both, the row carries
+`alsoBoughtBy` and that count ranks it first - and only those rows may be
+described as bought by others. Men's and women's ranges never mix, and kinds
+with no rule (appliances, hampers) return nothing rather than a guess.
+
 ### 3.4 Order tracking and history
 
 - Order status and history, delivery estimate, order detail, courier tracking,

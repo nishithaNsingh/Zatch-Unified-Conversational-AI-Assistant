@@ -618,6 +618,85 @@ def _trim_semantic_candidates(products: list) -> dict:
     return {"note": SEMANTIC_CANDIDATES_NOTE, "closestByMeaning": items}
 
 
+# Slugs the shopper never sees - the FORMAT rule forbids "formal-shirts"
+# in a reply, so the kind is handed over already in words.
+_KIND_WORDS = {
+    "tshirts-polos": "t-shirts", "jeans-trousers": "jeans and trousers",
+    "formal-trousers": "formal trousers", "formal-shirts": "formal shirts",
+    "casual-shirts": "casual shirts", "activewear-sportswear": "activewear",
+    "showpieces-figurines": "showpieces", "artificial-flowers-plants": "flowers",
+    "comforters-quilts": "comforters", "hair-accessories": "hair accessories",
+    "makeup-accessories": "accessories", "photo-frames": "photo frames",
+    "wall-decor": "wall decor", "table-decor": "table decor",
+    "ethnic-wear": "ethnic wear", "western-wear": "western wear",
+    "fusion-wear": "fusion wear", "party-wear": "party wear",
+    "hair-care": "hair care",
+}
+
+
+def _kind_words(slug: str | None) -> str | None:
+    if not slug:
+        return None
+    return _KIND_WORDS.get(slug, slug.replace("-", " "))
+
+
+def _trim_complete_the_look(result: dict) -> dict:
+    """get_complete_the_look - what goes with a product, and on what basis.
+
+    THE BASIS TRAVELS WITH EVERY ROW, because it is the claim the reply
+    will make. Every row is paired by KIND (a tee goes with jeans), and a
+    row that other shoppers really did buy alongside says how many - the
+    only number that licenses "others also bought". A row without it must
+    not be described that way, and the note says so in words, which the
+    model follows more reliably than an absent field.
+    """
+    seed = (result or {}).get("seed")
+    if seed is None:
+        return {"error": "Product not found.", "goesWith": []}
+
+    rows = []
+    for p in _dedupe_by_name_price(result.get("suggestions") or []):
+        row = {
+            "product_id": str(p.get("_id")),
+            "name": (p.get("name") or "").strip() or None,
+            "price": p.get("price"),
+            "discountedPrice": p.get("discountedPrice"),
+            "kind": _kind_words(p.get("subCategory")),
+        }
+        if p.get("alsoBoughtBy"):
+            row["alsoBoughtBy"] = p["alsoBoughtBy"]
+        rows.append(row)
+
+    out = {
+        "forProduct": (seed.get("name") or "").strip() or None,
+        "goesWith": rows,
+        "note": (
+            "Paired by kind of product. Say they go well with it. Only a row "
+            "with alsoBoughtBy may be described as bought by other shoppers, "
+            "with that number."
+        ),
+    }
+    if not rows:
+        out["note"] = (
+            "No pairing for this kind of product in the catalogue right now."
+            if not result.get("kinds")
+            else "Nothing that pairs with it is in stock right now."
+        )
+    return out
+
+
+def _dedupe_by_name_price(products: list) -> list:
+    """Same rule as _trim_product_list: identical name and price read as
+    one line repeated, not as a choice."""
+    seen, out = set(), []
+    for p in products:
+        key = ((p.get("name") or "").strip().lower(), p.get("discountedPrice"))
+        if key not in seen:
+            seen.add(key)
+            out.append(p)
+    return out
+
+
 _TRIMMERS = {
     "get_order_history": _trim_order_history,
     "search_products": _trim_product_list,
@@ -628,6 +707,7 @@ _TRIMMERS = {
     "get_product_detail": _trim_product_detail,
     "search_products_by_name": _trim_product_list,
     "find_similar_products": _trim_product_list,
+    "get_complete_the_look": _trim_complete_the_look,
     "search_products_semantically": _trim_semantic_candidates,
     # Live shopping
     "get_live_now": _trim_live_sessions,
@@ -761,6 +841,7 @@ _PRODUCT_LIST_SOURCES = {
     "search_products_by_name": None,
     "search_products_semantically": "closestByMeaning",
     "find_similar_products": None,
+    "get_complete_the_look": "goesWith",
     "get_trending_products": None,
     "get_recommendations": None,
     "get_session_products": "products",
@@ -807,6 +888,55 @@ def _bit_cards(tool_name: str, result) -> list[dict]:
             continue
         cards.append({"bit_id": item["bit_id"], "title": item.get("title")})
     return cards
+
+
+def _order_choices(tool_name: str, result) -> list[dict]:
+    """The orders this lookup returned, as buttons the shopper can tap to
+    answer "Which one?" instead of typing an item name or four digits.
+
+    ONLY get_order_history. It is the lookup the ORDERS rule runs before
+    asking which order, so it is the only one whose rows are ever the
+    options of a question. Whether they actually ARE is decided from the
+    reply, in orchestrator._deliver - a single order is answered, not
+    offered.
+
+    `message` IS WHAT A TAP SENDS, built here rather than by each client
+    so the app and the demo page send the same words - and exactly the
+    words the prompt already asks a typing user for: the item and the
+    last four digits. The item is there as well as the digits because
+    two orders can share a suffix.
+    """
+    if tool_name != "get_order_history":
+        return []
+    rows = (result or {}).get("orders") if isinstance(result, dict) else result
+    if not isinstance(rows, list):
+        return []
+
+    choices = []
+    for row in rows:
+        order_id = row.get("orderId") if isinstance(row, dict) else None
+        if not order_id:
+            continue
+        order_id = str(order_id)
+        # Stripped: measured catalogue names carry trailing spaces
+        # ("US Polo black shirt "), which a tap would send as "shirt , order".
+        items = [
+            i["name"].strip() for i in (row.get("items") or [])
+            if isinstance(i, dict) and isinstance(i.get("name"), str) and i["name"].strip()
+        ]
+        item = items[0] if items else None
+        if item and len(items) > 1:
+            item = f"{item} + {len(items) - 1} more"
+        last4 = order_id[-4:]
+        choices.append({
+            "order_id": order_id,
+            "last4": last4,
+            "item": item,
+            "status": row.get("status"),
+            "late": bool(row.get("isOverdue")),
+            "message": f"{item}, order ending {last4}" if item else f"The order ending {last4}",
+        })
+    return choices
 
 
 def _product_cards(tool_name: str, result) -> list[dict]:
@@ -1034,5 +1164,8 @@ async def execute_tool(
         bits = _bit_cards(tool_name, result)
         if bits:
             collector.append({"kind": "bits", "items": bits})
+        orders = _order_choices(tool_name, result)
+        if orders:
+            collector.append({"kind": "orders", "items": orders})
 
     return json.dumps(to_json_safe(result), default=str)

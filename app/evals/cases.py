@@ -107,6 +107,8 @@ CASES: list[Case] = [
        ("get_variant_stock", "get_product_detail", "search_products_by_name")),
     _c("product-similar", "Show me something similar to {product}",
        ("find_similar_products", "search_products_by_name")),
+    _c("product-complete-look", "What goes well with {product}?",
+       ("get_complete_the_look",)),
     _c("search-filter", "Show me men's clothing under 1000 rupees",
        ("search_products", "search_products_semantically")),
     _c("search-vague", "I need something warm for winter",

@@ -45,7 +45,7 @@
 | **Best-coupon finder** for the cart | Directly lifts conversion | Medium | Coupon validity check exists |
 | **Bargaining coach** — "offer ₹X, likely accepted" | Unique to Zatch; no big marketplace has it | Medium | Bargain tools exist |
 | **Compare two products** | Standard on Amazon / Flipkart | Small | ✅ Done — `compare_products` |
-| **Complete the look** — bought-together items | Bigger baskets | Medium | Similar-products search exists |
+| **Complete the look** — bought-together items | Bigger baskets | Medium | ✅ First version done — `get_complete_the_look`, paired by kind of product; "also bought" only where 2+ shoppers did |
 | **Size help** — "which size for a 32-inch waist?" | Fewer returns, a major cost in fashion | Medium — needs seller size charts | Missing |
 | **Personal picks** from browsing and purchase history | Better recommendations | Medium–Large | Basic version exists |
 | **Search by photo** — "find something like this" | Standard in fashion shopping | Large | Missing |

@@ -468,6 +468,128 @@ def reset_category_cache() -> None:
     global _CATEGORY_CACHE
     _CATEGORY_CACHE = None
 
+# WHAT FINISHES A LOOK, by kind of product.
+#
+# AN EDITORIAL RULE, NOT A MEASUREMENT, and it is written down here so
+# anyone can read and change it. The data cannot supply it: 131 of 134
+# orders hold one item and no two carts share a pair (measured, 2026-09),
+# so "bought together" would be invented. What IS real is every product
+# offered - an active, in-stock listing of the kind named below - and the
+# co-purchase count, reported only where two or more shoppers bought both.
+#
+# Order matters: kinds are taken in turn, so the first is the likeliest
+# pairing (a shirt's trousers before its watch). Kinds missing from the
+# map - appliances, the mixed "tools-accessories" bucket of hampers -
+# have no pairing, and the tool says so rather than guessing.
+COMPLEMENTS: dict[str, list[str]] = {
+    # Menswear: tops -> bottoms, then accessories.
+    "tshirts-polos": ["jeans-trousers", "shorts", "caps", "watches"],
+    "casual-shirts": ["jeans-trousers", "watches", "caps"],
+    "formal-shirts": ["formal-trousers", "watches"],
+    "party-wear": ["jeans-trousers", "formal-trousers", "watches"],
+    "jeans-trousers": ["casual-shirts", "tshirts-polos", "watches", "caps"],
+    "formal-trousers": ["formal-shirts", "watches"],
+    "shorts": ["tshirts-polos", "caps", "activewear-sportswear"],
+    "activewear-sportswear": ["shorts", "caps", "watches"],
+    "watches": ["formal-shirts", "casual-shirts"],
+    "caps": ["tshirts-polos", "shorts", "activewear-sportswear"],
+    # Womenswear: outfits -> accessories, and back.
+    "sarees": ["handbags", "hair-accessories", "makeup-accessories"],
+    "ethnic-wear": ["handbags", "hair-accessories", "makeup-accessories"],
+    "fusion-wear": ["handbags", "hair-accessories"],
+    "western-wear": ["handbags", "hair-accessories"],
+    "handbags": ["sarees", "ethnic-wear", "western-wear"],
+    "hair-accessories": ["sarees", "ethnic-wear"],
+    "makeup-accessories": ["sarees", "ethnic-wear"],
+    # Home, bath and care: things that make a set.
+    "bedsheets": ["comforters-quilts", "towels"],
+    "comforters-quilts": ["bedsheets"],
+    "towels": ["bedsheets"],
+    "skincare": ["hair-care"],
+    "hair-care": ["skincare"],
+    # Not showpieces-figurines: measured, everything filed there is a
+    # crochet bag charm, and a frame "goes with" a keychain for nobody.
+    "photo-frames": ["wall-decor", "clocks", "artificial-flowers-plants"],
+    "wall-decor": ["photo-frames", "clocks", "table-decor"],
+    "clocks": ["photo-frames", "wall-decor"],
+    "table-decor": ["artificial-flowers-plants", "photo-frames"],
+}
+
+# A men's shirt is never finished with a handbag. Seeds in these
+# categories only pair within their own family; everything else is not
+# gendered and pairs across categories freely.
+_CATEGORY_FAMILY = {
+    "men": ["Men", "men-accessories"],
+    "men-accessories": ["Men", "men-accessories"],
+    "women": ["Women", "women-accessories"],
+    "women-accessories": ["Women", "women-accessories"],
+}
+
+MAX_LOOK = 6
+
+
+async def get_complete_the_look(product_id: str, limit: int = 4) -> dict:
+    """Products that go with this one, from the catalogue as it stands.
+
+    Ranked by, in order: how many OTHER shoppers bought both (only where
+    at least two did - see orders_repo.count_co_buyers), then top pick,
+    saves, likes and views. Taken one per kind in turn, so four
+    suggestions for a tee are jeans, shorts, a cap and a watch rather
+    than four pairs of jeans.
+
+    Returns the seed as well, so the answer can name what it is pairing
+    with, and the kinds it looked for, so an empty result can say why.
+    """
+    # Imported here: orders_repo is a sibling repo, and the one function
+    # needed is a count - not worth a module-level coupling.
+    from app.repos import orders_repo
+
+    seed = await _find_product(product_id)
+    if seed is None:
+        return {"seed": None, "kinds": [], "suggestions": []}
+
+    kinds = COMPLEMENTS.get((seed.get("subCategory") or "").lower(), [])
+    if not kinds:
+        return {"seed": seed, "kinds": [], "suggestions": []}
+
+    limit = max(1, min(int(limit or 4), MAX_LOOK))
+    query: dict = {
+        "subCategory": {"$in": kinds},
+        "_id": {"$ne": seed.get("_id")},
+        "status": "active",
+        "isSold": False,
+        "totalStock": {"$gt": 0},
+    }
+    family = _CATEGORY_FAMILY.get((seed.get("category") or "").lower())
+    if family:
+        query["category"] = {"$in": family}
+
+    db = get_database()
+    docs = await db[COLLECTION].find(query, get_projection(COLLECTION)).to_list(length=200)
+    docs = sanitize_documents(COLLECTION, docs)
+    co_buyers = await orders_repo.count_co_buyers(product_id)
+
+    def rank(d):
+        return (
+            -co_buyers.get(str(d.get("_id")), 0),
+            -int(bool(d.get("isTopPick"))),
+            -(d.get("saveCount") or 0),
+            -(d.get("likeCount") or 0),
+            -(d.get("viewCount") or 0),
+        )
+
+    by_kind = {k: sorted((d for d in docs if d.get("subCategory") == k), key=rank) for k in kinds}
+    suggestions: list[dict] = []
+    while len(suggestions) < limit and any(by_kind.values()):
+        for k in kinds:
+            if by_kind[k] and len(suggestions) < limit:
+                d = by_kind[k].pop(0)
+                d["alsoBoughtBy"] = co_buyers.get(str(d.get("_id")))
+                suggestions.append(d)
+
+    return {"seed": seed, "kinds": kinds, "suggestions": suggestions}
+
+
 async def get_products_by_ids(product_ids: list) -> list[dict]:
     """Batch lookup - turns a list of product ObjectIds (e.g. from a
     live session's productSequence, or a Bit's tagged products) into

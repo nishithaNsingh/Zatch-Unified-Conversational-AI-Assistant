@@ -2,7 +2,7 @@
 WHAT:
     Formal tool definitions the LLM can choose to call, covering Phase
     5's top-3 priority areas: Order Management, Product Discovery,
-    Bargaining, Live Shopping, Bits and Reviews (37 tools total).
+    Bargaining, Live Shopping, Bits and Reviews (38 tools total).
     Each tool maps to an exact repo
     function from Phase 4.
 
@@ -276,6 +276,21 @@ TOOLS = [
         "function": {
             "name": "find_similar_products",
             "description": "Products similar to one the user is already looking at. Use for \"something like this\", \"alternatives\", \"cheaper version\".",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "product_id": {"type": "string"},
+                    "limit": {"type": "integer"},
+                },
+                "required": ["product_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_complete_the_look",
+            "description": "Products that go WITH one the user is looking at - trousers for a shirt, a handbag for a saree. Use for \"what goes with this\", \"complete the look\", \"what to pair it with\". Not for alternatives: that is find_similar_products.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -605,6 +620,7 @@ TOOL_REGISTRY = {
     "search_products_semantically": (products_repo.search_products_semantically, False),
     "compare_products": (products_repo.compare_products, False),
     "find_similar_products": (products_repo.find_similar_products, False),
+    "get_complete_the_look": (products_repo.get_complete_the_look, False),
     "get_trending_products": (products_repo.get_trending_products, False),
     "get_recommendations": (products_repo.get_recommendations, True),
     "get_seller_info": (products_repo.get_seller_info, False),

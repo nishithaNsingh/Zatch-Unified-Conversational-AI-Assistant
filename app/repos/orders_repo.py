@@ -184,3 +184,44 @@ async def check_cancellation_eligibility(user_id: str, order_id: str) -> dict | 
         "status": status,
         "canCancel": status in CANCELLABLE_STATUSES,
     }
+
+# Fewer shoppers than this and "also bought" is one person's basket, not
+# a pattern. Measured on the live data: 16 buyers, three of them test
+# accounts holding 7-15 products each, so a single buyer pairs trousers
+# with a wall clock. Two distinct buyers is the least that is not
+# anecdote.
+MIN_CO_BUYERS = 2
+
+
+async def count_co_buyers(product_id: str) -> dict[str, int]:
+    """For one product: every OTHER product, and how many distinct
+    shoppers bought both. Only pairs reaching MIN_CO_BUYERS are returned.
+
+    THE ONE DELIBERATELY UNSCOPED ORDER QUERY, and it is safe for the
+    reason it returns nothing but numbers: no buyer id, order id, date or
+    address leaves this function - only {product_id: count}. Every other
+    function in this module is scoped to the caller's own orders, and
+    anything that needs an order's CONTENTS still must be.
+
+    Across a shopper's orders, not within one order: measured, 131 of the
+    134 orders hold a single item, so "in the same basket" is a signal
+    this catalogue does not have yet.
+    """
+    object_id = to_object_id(product_id)
+    if object_id is None:
+        return {}
+
+    db = get_database()
+    buyers = await db[COLLECTION].distinct("buyerId", {"items.product": object_id})
+    if len(buyers) < MIN_CO_BUYERS:
+        return {}
+
+    pipeline = [
+        {"$match": {"buyerId": {"$in": buyers}}},
+        {"$unwind": "$items"},
+        {"$match": {"items.product": {"$ne": object_id, "$exists": True}}},
+        {"$group": {"_id": "$items.product", "buyers": {"$addToSet": "$buyerId"}}},
+        {"$project": {"n": {"$size": "$buyers"}}},
+        {"$match": {"n": {"$gte": MIN_CO_BUYERS}}},
+    ]
+    return {str(row["_id"]): row["n"] async for row in db[COLLECTION].aggregate(pipeline)}

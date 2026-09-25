@@ -232,6 +232,26 @@ def cards_named_in(reply: str, cards: list[dict]) -> list[dict]:
     return kept
 
 
+def order_choices_offered(reply: str, choices: list[dict]) -> list[dict]:
+    """The orders the reply asks the shopper to choose between, or none.
+
+    FOUND BY THE DIGITS, for the reason attribute() finds suffixes by
+    value: the wording around them changes between runs, the four digits
+    do not. An order the reply does not list is not offered as a button.
+
+    TWO OR MORE, OR NOTHING. One order named means the reply answered
+    about it - the ORDERS rule says "exactly one -> use it, do not ask" -
+    and a single button under an answer is a question nobody asked.
+    """
+    if not reply:
+        return []
+    named = [
+        c for c in choices
+        if c.get("last4") and re.search(rf"(?<!\d){re.escape(c['last4'])}(?!\d)", reply)
+    ]
+    return named if len(named) >= 2 else []
+
+
 def product_names(messages: list[dict]) -> set:
     """Every product name any tool actually returned.
 

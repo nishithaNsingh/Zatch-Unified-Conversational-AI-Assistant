@@ -321,6 +321,21 @@ PAGE = r"""
   .chip:hover { border-color:var(--accent-dim); background:var(--surface-2); transform:translateY(-1px); }
   .chip.cat { border-color:#2a3a4f; }
 
+  /* Tap-to-choose order buttons, under a "Which one?" reply. */
+  .picks { align-self:stretch; display:flex; flex-direction:column; gap:7px; max-width:86%; }
+  .pick {
+    display:flex; align-items:center; gap:10px; text-align:left; cursor:pointer;
+    background:var(--surface); border:1px solid var(--line); color:var(--text);
+    border-radius:12px; padding:10px 13px; font:inherit; font-size:13px; transition:.15s;
+  }
+  .pick:hover:not(:disabled) { border-color:var(--accent-dim); background:var(--surface-2); }
+  .pick:disabled { cursor:default; opacity:.45; }
+  .pick.chosen { opacity:1; border-color:var(--accent-dim); }
+  .pick .d4 { font-variant-numeric:tabular-nums; font-weight:650; color:var(--muted); }
+  .pick .it { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .pick .st { font-size:11.5px; color:var(--muted); white-space:nowrap; }
+  .pick .late { color:#ff8a96; }
+
   .typing { display:flex; gap:4px; align-items:center; padding:13px 15px; }
   .typing i { width:6px; height:6px; border-radius:50%; background:var(--muted);
               display:block; animation:blink 1.3s infinite; }
@@ -548,6 +563,7 @@ const SOURCES = {
   check_cancellation_eligibility:"your orders",
   search_products:"the catalogue", search_products_by_name:"the catalogue",
   search_products_semantically:"the catalogue", find_similar_products:"the catalogue",
+  get_complete_the_look:"the catalogue",
   get_product_detail:"the catalogue", get_variant_stock:"the catalogue",
   get_trending_products:"the catalogue", get_recommendations:"the catalogue",
   get_discounted_products:"current offers", compare_products:"the catalogue",
@@ -884,6 +900,7 @@ function renderChat() {
       }
       if (m.products) productCards(m.products);
       if (m.bits) bitCards(m.bits);
+      if (m.orders) orderChoices(m.orders, m);
       if (m.meta) metaLine(m.meta.timing, m.meta.checked, null, m, priorQuestion(m));
     }
   });
@@ -1120,6 +1137,54 @@ function bitCards(bits) {
     wrap.appendChild(card);
   });
 
+  $("log").appendChild(wrap);
+  stick();
+  return wrap;
+}
+
+/* TAP-TO-CHOOSE ORDERS. When a reply lists several orders and asks
+   which one, the server sends them as choices beside the prose. A tap
+   sends the choice's `message` exactly as if it had been typed - the
+   server decides those words, so the app and this page send the same.
+   Once one is chosen the row locks, and stays locked when the thread is
+   reopened, so an old question cannot be answered twice. */
+function orderChoices(orders, msg) {
+  if (!orders || !orders.length) return null;
+  const wrap = document.createElement("div");
+  wrap.className = "picks";
+  const buttons = orders.map(o => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "pick";
+    const d4 = document.createElement("span");
+    d4.className = "d4";
+    d4.textContent = "…" + o.last4;
+    const it = document.createElement("span");
+    it.className = "it";
+    it.textContent = o.item || "Order";
+    const st = document.createElement("span");
+    st.className = "st" + (o.late ? " late" : "");
+    st.textContent = [o.status, o.late ? "late" : null].filter(Boolean).join(" · ");
+    b.append(d4, it, st);
+    b.setAttribute("aria-label", o.message);
+    b.onclick = () => {
+      if (busy || msg.chosen) return;
+      msg.chosen = o.order_id;
+      lock();
+      upsertThread();
+      $("q").value = o.message;
+      send();
+    };
+    return b;
+  });
+  function lock() {
+    buttons.forEach((b, i) => {
+      b.disabled = true;
+      b.classList.toggle("chosen", orders[i].order_id === msg.chosen);
+    });
+  }
+  if (msg.chosen) lock();
+  wrap.append(...buttons);
   $("log").appendChild(wrap);
   stick();
   return wrap;
@@ -1426,6 +1491,7 @@ async function send() {
   const checked = [];
   let products = [];
   let bits = [];
+  let orders = [];
   let attribution = [];
   const t0 = performance.now();
 
@@ -1501,7 +1567,8 @@ async function send() {
       ? (firstToken / 1000).toFixed(1) + "s to first word · " + (ms / 1000).toFixed(1) + "s total"
       : (ms / 1000).toFixed(1) + "s";
     const src = checked.join(" · ");
-    const botMsg = {role: "bot", text: bubble.textContent, products, bits, attribution, meta: {timing, checked: src}};
+    const botMsg = {role: "bot", text: bubble.textContent, products, bits, orders, attribution, meta: {timing, checked: src}};
+    orderChoices(orders, botMsg);
     thread.messages.push(botMsg);
     metaLine(timing, src, bubble.textContent, botMsg, text);
     thread.updatedAt = Date.now();
@@ -1564,6 +1631,7 @@ async function send() {
         else if (name === "token") appendToken(payload.text);
         else if (name === "products") products = payload.products || [];
         else if (name === "bits") bits = payload.bits || [];
+        else if (name === "orders") orders = payload.orders || [];
         else if (name === "attribution") attribution = payload.claims || [];
         else if (name === "done")  finish(payload.reply);
         else if (name === "error") { fail(payload.message); return; }
@@ -1996,7 +2064,7 @@ async def _questions_for_user(db, user_id, fallback: list[str]) -> list[str]:
     WHY BREADTH IS THE POINT. The first version asked about orders three
     times, so the assistant read as an order tracker in the first three
     seconds - when it also does bargaining, semantic search, live
-    sessions, Bits, coupons and reviews across 37 tools. The opening row
+    sessions, Bits, coupons and reviews across 38 tools. The opening row
     is the only place a visitor learns what to ask for, so it should
     show the range rather than the same area repeatedly.
 
