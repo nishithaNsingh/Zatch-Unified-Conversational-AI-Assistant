@@ -70,6 +70,7 @@ logger = structlog.get_logger()
 # A single turn makes up to MAX_TOOL_ITERATIONS calls, so this is a
 # per-CALL ceiling, not a per-message one.
 REQUEST_TIMEOUT_SECONDS = 30.0
+NVIDIA_NEMOTRON_TIMEOUT_SECONDS = 90.0
 # COVERS REASONING TOKENS TOO, which is why it is not 1024.
 #
 # gpt-5-mini is a reasoning model, and on Azure max_completion_tokens
@@ -163,6 +164,13 @@ class Provider:
     # Not cosmetic: it decides eligibility when the configured database
     # holds real customers - see get_providers().
     trains_on_prompts: bool = True
+
+
+def _is_nvidia_nemotron(provider: Provider) -> bool:
+    return (
+        provider.base_url.rstrip("/").lower() == "https://integrate.api.nvidia.com/v1"
+        and (provider.model or "").lower().startswith("nvidia/nemotron-3.5-lightning")
+    )
 
 
 @lru_cache
@@ -354,9 +362,10 @@ def assess_chain() -> ChainStatus:
             )
         )
 
-    if credit_days is not None:
+    azure_active = any(provider.name == "azure" for provider in providers)
+    if credit_days is not None and azure_active:
         if credit_days < 0:
-            level = "critical"
+            level = "critical" if not redundant else "at_risk"
             reasons.append(f"the Azure credit expired {abs(credit_days)} day(s) ago")
         elif credit_days <= CREDIT_CRITICAL_DAYS and not redundant:
             level = "critical"
@@ -599,6 +608,11 @@ def _build_payload(
     if effort and provider.kind == "azure" and "gpt-5" in (provider.model or "").lower():
         payload["reasoning_effort"] = effort
 
+    # Nemotron's default thinking can delay the first streamed tool call
+    # beyond our read timeout. The NVIDIA prototype supports this switch.
+    if _is_nvidia_nemotron(provider):
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
+
     return payload
 
 
@@ -625,12 +639,19 @@ async def complete(
     three LLMError types above; never returns a partial result."""
     payload = _build_payload(provider, messages, tools, tool_choice)
     url, headers, body = build_request(provider, payload)
+    timeout_seconds = (
+        NVIDIA_NEMOTRON_TIMEOUT_SECONDS
+        if _is_nvidia_nemotron(provider)
+        else REQUEST_TIMEOUT_SECONDS
+    )
 
     try:
-        response = await _get_http_client().post(url, headers=headers, json=body)
+        response = await _get_http_client().post(
+            url, headers=headers, json=body, timeout=timeout_seconds
+        )
     except httpx.TimeoutException as exc:
         raise LLMUnavailable(
-            f"{provider.name}: timed out after {REQUEST_TIMEOUT_SECONDS}s"
+            f"{provider.name}: timed out after {timeout_seconds}s"
         ) from exc
     except httpx.HTTPError as exc:
         raise LLMUnavailable(f"{provider.name}: {type(exc).__name__}") from exc
@@ -706,6 +727,15 @@ async def stream(
     they are reassembled by index here - a partial arguments string is
     not valid JSON and must never reach the orchestrator's parser.
     """
+    # NVIDIA's Nemotron SSE endpoint delays its first event past our read
+    # timeout for tool-enabled prompts. Its buffered endpoint returns the
+    # same tool call promptly, so deliver its completed text as one chunk.
+    if _is_nvidia_nemotron(provider):
+        completion = await complete(provider, messages, tools, tool_choice)
+        if on_text is not None and completion.content:
+            on_text(completion.content)
+        return completion
+
     payload = _build_payload(provider, messages, tools, tool_choice)
     payload["stream"] = True
     # Usage is otherwise absent from a streamed response, and the

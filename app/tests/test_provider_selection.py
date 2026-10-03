@@ -42,7 +42,7 @@ def _settings(**overrides) -> Settings:
         "azure_openai_api_key": "azure-key",
         "azure_openai_deployment": "gpt-5-mini",
     }
-    return Settings(**{**base, **overrides})
+    return Settings(_env_file=None, **{**base, **overrides})
 
 
 @pytest.fixture
@@ -272,6 +272,21 @@ class TestChainAssessment:
     def test_an_expired_credit_is_critical(self, configured):
         configured(mongodb_database="zatch", azure_credit_expires="2020-01-01")
         assert llm_client.assess_chain().level == "critical"
+
+    def test_expired_azure_credit_does_not_mark_nvidia_only_chain_critical(self, configured):
+        configured(
+            mongodb_database="zatch",
+            azure_openai_endpoint=None,
+            azure_openai_api_key=None,
+            azure_credit_expires="2020-01-01",
+            backup_llm_base_url="https://integrate.api.nvidia.com/v1",
+            backup_llm_api_key="backup-key",
+            backup_llm_model="nvidia/nemotron-3.5-lightning-30b-a3b",
+            backup_llm_trains_on_prompts=False,
+        )
+        status = llm_client.assess_chain()
+        assert status.providers == ("backup",)
+        assert status.level == "at_risk"
 
     def test_no_usable_provider_is_critical_rather_than_an_exception(self, configured):
         """assess_chain is called by /health, which must answer even when
