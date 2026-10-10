@@ -523,7 +523,9 @@ class TestProviderFailureHandling:
     ):
         # The cap itself is unchanged - only what happens after it.
         script = [tool_call("get_order_history", {}, call_id=f"c{i}") for i in range(3)]
-        script.append(reply("done"))
+        # A sentence that uses the lookup, so the reply checks do not ask
+        # again - this test counts tool rounds, not answer quality.
+        script.append(reply("Here are your orders."))
         llm = scripted(script)
         await client.post(
             "/chat",

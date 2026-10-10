@@ -48,11 +48,13 @@ MECHANISM:
 
 import inspect
 import json
+import math
 from datetime import datetime, timezone
 
 import structlog
 from bson import ObjectId
 
+from app.agent.embeddings import EmbeddingModelMismatch
 from app.agent.tools import TOOL_REGISTRY
 from app.config.settings import get_settings
 from app.memory import demand_store
@@ -96,6 +98,23 @@ TOOL_FAILED = {
 }
 
 
+# WHAT A SEARCH THAT COULD NOT RUN TELLS THE MODEL. Not TOOL_FAILED's
+# generic "cannot check this": measured with the Azure embedding key
+# returning 401, the old empty result became "Zatch doesn't have that
+# right now" - a claim about the catalogue from a search that never
+# reached it. The instruction names that sentence because it is the one
+# the model reaches for.
+SEARCH_UNAVAILABLE = {
+    "error": "Searching by description is temporarily unavailable.",
+    "instruction": (
+        "Tell the user that searching by description isn't working right now, "
+        "and suggest they try a product name or a category instead. Do NOT say "
+        "Zatch doesn't have it - nothing was searched - and do NOT name products "
+        "that did not come from a tool result."
+    ),
+}
+
+
 def to_json_safe(value):
     if isinstance(value, ObjectId):
         return str(value)
@@ -106,6 +125,17 @@ def to_json_safe(value):
     if isinstance(value, list):
         return [to_json_safe(v) for v in value]
     return value
+
+
+def _discount_percent(price, discounted) -> int:
+    """The reduction as a whole percentage, ROUNDED DOWN.
+
+    round() turned a ₹1,000 listing selling at ₹5 - 99.5% off - into
+    "100% off", which reads as free and is not true. Rounding down never
+    overstates a discount. The inner round(…, 6) stops float error from
+    turning an exact 30.0 into 29.999999… and then 29.
+    """
+    return math.floor(round((price - discounted) / price * 100, 6))
 
 
 def _trim_product_list(products: list) -> list:
@@ -156,7 +186,7 @@ def _trim_deals(products: list) -> list:
         discounted = item.get("discountedPrice")
         if isinstance(price, (int, float)) and isinstance(discounted, (int, float)) and price > 0:
             item["saving"] = round(price - discounted, 2)
-            item["discountPercent"] = round((price - discounted) / price * 100)
+            item["discountPercent"] = _discount_percent(price, discounted)
         rows.append(item)
     return rows
 
@@ -214,7 +244,7 @@ def _trim_comparison(result: dict | None) -> dict | None:
         }
         if isinstance(price, (int, float)) and isinstance(discounted, (int, float)) and price > 0:
             row["saving"] = round(price - discounted, 2)
-            row["discountPercent"] = round((price - discounted) / price * 100)
+            row["discountPercent"] = _discount_percent(price, discounted)
         rows.append(row)
 
     out = {"compared": rows, "notFound": result.get("notFound") or []}
@@ -307,6 +337,12 @@ def _trim_order_history(orders: list) -> list:
             ],
             "total": (order.get("pricing") or {}).get("total"),
             "expectedDelivery": expected,
+            # COMPUTED, NOT LEFT TO THE MODEL. The ORDERS rule branches on
+            # "in progress", and Nemotron read two orders with status
+            # "pending" (194 days late) as not in progress - then listed
+            # them anyway under "there are no orders currently in
+            # progress". The classification is one line here.
+            "inProgress": status not in DELIVERED_OR_DONE,
         }
 
         if isinstance(expected, datetime) and status not in DELIVERED_OR_DONE:
@@ -667,13 +703,23 @@ def _trim_complete_the_look(result: dict) -> dict:
             row["alsoBoughtBy"] = p["alsoBoughtBy"]
         rows.append(row)
 
+    bought_together = sum(1 for row in rows if row.get("alsoBoughtBy"))
     out = {
         "forProduct": (seed.get("name") or "").strip() or None,
         "goesWith": rows,
+        # STATED, NOT IMPLIED BY AN ABSENT FIELD. Measured on Nemotron: 1 of
+        # 4 replies said "based on what other shoppers have paired" when no
+        # row carried alsoBoughtBy. A missing key is easy to read past; a
+        # zero beside the rows, and a sentence saying what it means, is not.
+        "rowsBoughtByOtherShoppers": bought_together,
         "note": (
             "Paired by kind of product. Say they go well with it. Only a row "
             "with alsoBoughtBy may be described as bought by other shoppers, "
             "with that number."
+            if bought_together
+            else "Paired by kind of product only. No shopper data links any of "
+                 "these to it, so do NOT say other shoppers or customers bought, "
+                 "paired or chose them. Say they go well with it."
         ),
     }
     if not rows:
@@ -739,12 +785,16 @@ _TRIMMERS = {
 # Bits - is one line.
 async def _summarise_orders(trimmed: list, user_id: str) -> dict:
     total = await orders_repo.count_orders(user_id)
+    in_progress = sum(1 for row in trimmed if isinstance(row, dict) and row.get("inProgress"))
     return {
         "orders": trimmed,
         # Named so the difference is unmissable: the model has to work to
         # confuse "showing" with "totalOrders".
         "showing": len(trimmed),
         "totalOrders": total,
+        # The count the ORDERS rule branches on, so "none / one / two or
+        # more in progress" is read rather than inferred from statuses.
+        "inProgressShown": in_progress,
         "note": (
             f"Showing the {len(trimmed)} most recent of {total} orders."
             if total > len(trimmed)
@@ -1103,6 +1153,11 @@ async def execute_tool(
     logger.info("tool_executing", tool_name=tool_name, arguments=arguments)
     try:
         result = await func(**kwargs)
+    except (products_repo.SemanticSearchUnavailable, EmbeddingModelMismatch) as exc:
+        # Returned BEFORE the unmet-demand step below, deliberately: a
+        # search that never ran says nothing about what Zatch stocks.
+        logger.error("semantic_search_could_not_run", tool_name=tool_name, error=str(exc)[:200])
+        return json.dumps(SEARCH_UNAVAILABLE)
     except Exception as exc:
         logger.error("tool_execution_failed", tool_name=tool_name, error=str(exc))
         return json.dumps(TOOL_FAILED)

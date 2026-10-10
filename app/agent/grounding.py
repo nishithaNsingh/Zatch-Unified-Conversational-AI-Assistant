@@ -232,12 +232,41 @@ def cards_named_in(reply: str, cards: list[dict]) -> list[dict]:
     return kept
 
 
+# A run of digits long enough to be part of an order id. Four is the
+# shortest form the prompt asks for ("ending 1378").
+_DIGIT_RUN = re.compile(r"\d{4,}")
+
+
+def _order_named(digit_runs: list[str], choice: dict) -> bool:
+    """Whether any digit run in the reply is the END of this order's id.
+
+    A SUFFIX, NOT A FIXED FOUR. The prompt asks for "ending 1378", and
+    gpt-5-mini wrote that. Nemotron writes the whole id,
+    "ORD1774196577926819", where 6819 sits inside a longer number - so a
+    four-digit match bounded by non-digits found nothing, and 0 of 4 live
+    replies drew a button. Every form the id can take ends the same way:
+    the full id, a masked "ORD****6819" or "…6819", and the bare four.
+
+    A run that ends the id but is not its end - "21378" against an order
+    ending 01378 - is still a different number, and does not match.
+    """
+    digits = re.sub(r"\D", "", str(choice.get("order_id") or ""))
+    if not digits:
+        digits = str(choice.get("last4") or "")
+    return bool(digits) and any(digits.endswith(run) for run in digit_runs)
+
+
 def order_choices_offered(reply: str, choices: list[dict]) -> list[dict]:
     """The orders the reply asks the shopper to choose between, or none.
 
     FOUND BY THE DIGITS, for the reason attribute() finds suffixes by
-    value: the wording around them changes between runs, the four digits
-    do not. An order the reply does not list is not offered as a button.
+    value: the wording around them changes between runs, the digits do
+    not. An order the reply does not list is not offered as a button.
+
+    THE PROSE AROUND THEM IS NOT READ. A measured Nemotron reply opened
+    "There are no orders currently in progress" and then listed two
+    pending ones and asked which; the list and the question are what the
+    shopper acts on, so the list is what decides.
 
     TWO OR MORE, OR NOTHING. One order named means the reply answered
     about it - the ORDERS rule says "exactly one -> use it, do not ask" -
@@ -245,10 +274,8 @@ def order_choices_offered(reply: str, choices: list[dict]) -> list[dict]:
     """
     if not reply:
         return []
-    named = [
-        c for c in choices
-        if c.get("last4") and re.search(rf"(?<!\d){re.escape(c['last4'])}(?!\d)", reply)
-    ]
+    runs = _DIGIT_RUN.findall(reply)
+    named = [c for c in choices if _order_named(runs, c)]
     return named if len(named) >= 2 else []
 
 
@@ -804,3 +831,308 @@ def unexplained_answer(
         "no tool was called and the reply mentions nothing about Zatch, "
         "so it was answered from the model's own knowledge"
     )
+
+
+# ── Does the reply answer from the lookup at all? ────────────────────
+#
+# THE HOLE unexplained_answer LEAVES, measured on Nemotron. Asked "मेरे
+# कार्ट में क्या है?", the model called get_cart, received three real items,
+# and replied "मेरा नाम नेमोट्रॉन है ... एनवीडिया" - "my name is Nemotron,
+# made by NVIDIA". Both signals above stand down for it, correctly by
+# their own terms: a tool RAN, and the reply is not Latin. Neither asks
+# the question that matters once a lookup has returned data: does the
+# answer use any of it?
+#
+# This asks exactly that, and only on turns where a lookup FOUND
+# something. A real answer about a cart, an order or a product carries at
+# least one of: a word or number from the result, a price, or a Zatch
+# word. "My name is Nemotron" carries none.
+
+DEVANAGARI = re.compile(r"[ऀ-ॿ]")
+
+# Stems a Devanagari answer about Zatch uses. Matched as substrings,
+# because Hindi inflects by suffix ("ऑर्डर्स", "कार्ट में") and a word set
+# would miss every inflected form. Deliberately concrete: a generic word
+# like "मदद" (help) would let any polite non-answer through.
+DEVANAGARI_DOMAIN = (
+    "ज़ैच", "जैच", "ऑर्डर", "आर्डर", "ओर्डर", "कार्ट", "प्रोडक्ट", "उत्पाद", "सामान",
+    "आइटम", "डिलीवरी", "डिलिवरी", "कूरियर", "ट्रैक", "कूपन", "ऑफ़र", "ऑफर", "छूट",
+    "डिस्काउंट", "कीमत", "दाम", "मूल्य", "रुपये", "रुपए", "मोलभाव", "बार्गेन",
+    "विक्रेता", "सेलर", "रिव्यू", "समीक्षा", "रेटिंग", "लाइव", "वीडियो", "बिट्स",
+    "स्टॉक", "साइज़", "साइज", "रंग", "खाली", "रिफंड", "वापसी", "रिटर्न", "रद्द",
+    "कैंसल", "इनवॉइस", "बिल", "शिपिंग", "नोटिफिकेशन", "सूचना", "फॉलोअर", "सेव",
+    "खरीद", "डील", "हाँ", "हां", "नहीं",
+)
+
+# The English vocabulary, minus words any polite non-answer contains:
+# "I'm an AI assistant here to help" is not about a cart. Plus the bare
+# yes/no a terse correct answer may consist of, and the words a reply
+# uses to PRESENT what was looked up ("here is what I found", "a few
+# picks") - the cards beside it carry the detail, so such a reply is
+# using the lookup even when it names nothing.
+RELEVANCE_VOCABULARY = (DOMAIN_VOCABULARY - {"help", "assistant", "app"}) | {
+    "yes", "no", "nope", "haan", "han", "nahi", "nahin",
+    "found", "options", "picks", "results", "suggestions", "matches", "trending",
+}
+
+_NUMBER = re.compile(r"\d+(?:,\d+)*(?:\.\d+)?")
+
+
+def _turn_evidence(turn_messages: list) -> tuple[set, set]:
+    """Words and numbers this turn's lookups returned.
+
+    Digit runs inside STRINGS count as numbers too, because a date comes
+    back as "2026-10-12T00:00:00" and the answer says "12 October".
+    """
+    strings, numbers = observed(turn_messages)
+    words = set()
+    for value in strings:
+        for word in _words(value):
+            if len(word) >= EVIDENCE_MIN_LETTERS and word not in _COMMON:
+                words.add(word)
+        numbers.update(float(run) for run in re.findall(r"\d+", value))
+    return words, numbers
+
+
+def unrelated_to_findings(reply: str, turn_messages: list) -> str | None:
+    """Why this reply ignores what this turn's lookup returned, or None.
+
+    THE CALLER DECIDES WHEN IT APPLIES: only after a lookup found data.
+    An empty result legitimately produces "I couldn't find that", which
+    shares nothing with an empty list and is still the right answer.
+
+    GENEROUS ON PURPOSE, like unexplained_answer. Any one link to the
+    lookup or to Zatch clears the reply - a Zatch word, a ₹ price, a
+    returned word or number, or a reply made only of questions. What is
+    left is an answer that could have been written without the lookup at
+    all, which is exactly what the reported case was.
+
+    STANDS DOWN FOR SCRIPTS IT HAS NO VOCABULARY FOR. Devanagari is
+    covered; a correct Tamil or Bengali answer would otherwise be judged
+    unrelated purely for being unreadable here.
+    """
+    text = (reply or "").strip()
+    if not text:
+        return None
+
+    sentences = [s.strip() for s in _SENTENCE.split(text) if s.strip()]
+    if sentences and all(s.endswith("?") for s in sentences):
+        return None
+    if "₹" in text:
+        return None
+    if _NON_LATIN.search(text) and not DEVANAGARI.search(text):
+        return None
+
+    words = _words(text)
+    if words & RELEVANCE_VOCABULARY:
+        return None
+    if any(stem in text for stem in DEVANAGARI_DOMAIN):
+        return None
+
+    evidence_words, evidence_numbers = _turn_evidence(turn_messages)
+    if words & evidence_words:
+        return None
+    for raw in _NUMBER.findall(text):
+        value = _amount(raw)
+        if value is not None and value in evidence_numbers:
+            return None
+
+    return (
+        "a lookup returned data, and the reply uses none of it - no product, "
+        "number, price or Zatch word from the result"
+    )
+
+
+# ── Did the reply come back in the shopper's script? ─────────────────
+#
+# Measured on Nemotron: "मेरे कार्ट में क्या है?" answered in English. The
+# LANGUAGE rule is in the prompt and gpt-5-mini followed it; this model
+# does not reliably. Script is checkable mechanically; language within
+# one script (Hinglish against English) is not, so only scripts are judged.
+
+INDIC_SCRIPTS = (
+    ("Hindi, written in Devanagari script", re.compile(r"[ऀ-ॿ]")),
+    ("Bengali script", re.compile(r"[ঀ-৿]")),
+    ("Gurmukhi (Punjabi) script", re.compile(r"[਀-੿]")),
+    ("Gujarati script", re.compile(r"[઀-૿]")),
+    ("Odia script", re.compile(r"[଀-୿]")),
+    ("Tamil script", re.compile(r"[஀-௿]")),
+    ("Telugu script", re.compile(r"[ఀ-౿]")),
+    ("Kannada script", re.compile(r"[ಀ-೿]")),
+    ("Malayalam script", re.compile(r"[ഀ-ൿ]")),
+)
+
+
+def script_mismatch(user_message: str, reply: str) -> str | None:
+    """The script the shopper wrote in, if the reply does not use it.
+
+    Returns the description to put in a corrective instruction, or None
+    when the reply already matches or the shopper wrote in Latin letters.
+    """
+    if not reply or not user_message:
+        return None
+    for description, pattern in INDIC_SCRIPTS:
+        if pattern.search(user_message):
+            return None if pattern.search(reply) else description
+    return None
+
+
+# ── "Other shoppers bought it" with nothing saying so ───────────────
+#
+# Measured: 1 of 4 live complete-the-look replies opened "Based on what
+# other shoppers have paired with the Lenin Mix Sarees" when no row
+# carried alsoBoughtBy. The pairing is an editorial rule by kind of
+# product (products_repo.COMPLEMENTS); a claim about shoppers is invented.
+
+SOCIAL_PROOF = re.compile(
+    r"\bbought\s+together\b"
+    r"|\bpopular\s+(?:pairing|combo|combination|choice)s?\b"
+    r"|\b(?:shoppers|customers|buyers|people)\b[^.\n]{0,30}?"
+    r"\b(?:bought|buy|buying|paired|pair|pairing|chose|choose|picked|purchased|went\s+for)\b",
+    re.IGNORECASE,
+)
+
+PAIRING_TOOL = "get_complete_the_look"
+
+
+def _has_co_purchase_count(node) -> bool:
+    if isinstance(node, dict):
+        return bool(node.get("alsoBoughtBy")) or any(
+            _has_co_purchase_count(v) for v in node.values()
+        )
+    if isinstance(node, list):
+        return any(_has_co_purchase_count(v) for v in node)
+    return False
+
+
+def unsupported_social_proof(reply: str, turn_messages: list) -> str | None:
+    """The claim about other shoppers, if nothing this turn supports it.
+
+    Narrow by design: judged only on turns that ran the pairing lookup,
+    because that is where the claim was measured, and elsewhere a review
+    ("shoppers who bought it rated it 4") can legitimately say it.
+    """
+    if not reply:
+        return None
+    if PAIRING_TOOL not in tool_names(turn_messages).values():
+        return None
+    if any(_has_co_purchase_count(p) for p in tool_payloads(turn_messages)):
+        return None
+    match = SOCIAL_PROOF.search(reply)
+    return match.group(0) if match else None
+
+
+def drop_social_proof(reply: str) -> str:
+    """The reply without its unsupported sentences - the last resort when
+    asking again did not remove the claim. A sentence carrying a price is
+    kept: it is a product row, and losing a row is worse than the phrase."""
+    kept_lines = []
+    for line in (reply or "").split("\n"):
+        sentences = re.split(r"(?<=[.!?:])\s+", line)
+        kept = [s for s in sentences if "₹" in s or not SOCIAL_PROOF.search(s)]
+        joined = " ".join(kept).strip()
+        if joined or not line.strip():
+            kept_lines.append(joined)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept_lines)).strip()
+
+
+# ── Formatting the prompt asks for and the model ignores ────────────
+
+def plain_text(reply: str) -> str:
+    """The reply without markdown bold, or the blank lines around it.
+
+    The FORMAT rule forbids bold, and gpt-5-mini obeyed it. Nemotron wrote
+    "**Handbags**" in 2 of 4 complete-the-look replies and bolded order
+    ids, which a phone chat bubble shows as literal asterisks. Stripped
+    mechanically, because a rule the model ignores is not fixed by
+    repeating it.
+    """
+    return (reply or "").replace("**", "").strip()
+
+
+# ── Things the model says about ITSELF, or reads back from its brief ──
+#
+# Measured on Nemotron, inside replies that were otherwise correct:
+#   - a Hindi cart answer that ended "मैं नेमोट्रॉन हूँ" (I am Nemotron) and
+#     then quoted the SCOPE rule from the system prompt, refusal and all;
+#   - a complete-the-look answer that ended "Say they go well with it." -
+#     the tool result's own note, read back to the shopper.
+# Neither is data, and neither changes what the answer says about Zatch, so
+# the lines are removed rather than the answer re-asked.
+
+SELF_DISCLOSURE = re.compile(
+    r"nemotron|nvidia|openai|chatgpt|\bgpt-?\d|\bllama\b|anthropic"
+    r"|language model|system prompt"
+    r"|नेमोट्रॉन|एनवीडिया|ओपनएआई",
+    re.IGNORECASE,
+)
+
+
+def _tokens(text: str) -> str:
+    return " ".join(_name_tokens(text))
+
+
+def _brief_sentences(turn_messages: list) -> list[str]:
+    """Every sentence a tool result addressed to the model - its "note"
+    and "instruction" fields - normalised for comparison."""
+    found: list[str] = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in ("note", "instruction") and isinstance(value, str):
+                    found.extend(
+                        _tokens(s) for s in re.split(r"(?<=[.!?])\s+|\s-\s", value)
+                    )
+                else:
+                    walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    for payload in tool_payloads(turn_messages):
+        walk(payload)
+    return [s for s in found if s]
+
+
+def drop_self_talk(reply: str, turn_messages: list, refusal: str) -> str:
+    """The reply without lines that disclose the model or quote its brief.
+
+    THREE KINDS OF LINE GO:
+      - one naming the model or its maker ("I am Nemotron", "NVIDIA");
+      - one quoting the out-of-scope refusal inside a reply that is NOT
+        the refusal - that is the system prompt being read out;
+      - a sentence with no digits that repeats a tool's note or
+        instruction word for word. Digits exempt it: "Showing the 8 most
+        recent of 67 orders" is a fact the shopper should hear, and facts
+        carry numbers; "Say they go well with it" is an instruction.
+
+    Returns "" when nothing is left, and the caller decides what that means.
+    """
+    text = (reply or "").strip()
+    refusal_tokens = _tokens(refusal)
+    if _tokens(text) == refusal_tokens:
+        return text
+
+    brief = _brief_sentences(turn_messages)
+    kept_lines = []
+    for line in text.split("\n"):
+        if SELF_DISCLOSURE.search(line) or (refusal_tokens and refusal_tokens in _tokens(line)):
+            continue
+        sentences = re.split(r"(?<=[.!?])\s+", line)
+        kept = []
+        for sentence in sentences:
+            norm = _tokens(sentence)
+            # A WHOLE note sentence, not a fragment of one. An instruction
+            # often contains the words it wants said - "tell the user that
+            # searching by description isn't working right now" - and the
+            # reply that says them is obeying, not echoing.
+            echoed = not re.search(r"\d", sentence) and any(
+                len(b.split()) >= 4 and b in norm for b in brief
+            )
+            if not echoed:
+                kept.append(sentence)
+        joined = " ".join(kept).strip()
+        if joined or not line.strip():
+            kept_lines.append(joined)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept_lines)).strip()

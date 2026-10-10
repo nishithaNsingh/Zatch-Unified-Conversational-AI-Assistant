@@ -780,6 +780,17 @@ async def find_similar_products(product_id: str, limit: int = 5) -> list[dict]:
     # $in does not preserve order, and here the order IS the relevance.
     return [by_id[pid] for pid in ranked_ids if pid in by_id]
 
+class SemanticSearchUnavailable(Exception):
+    """Free-text search could not run: the query could not be embedded,
+    or the vector index could not be queried.
+
+    SEPARATE FROM AN EMPTY RESULT on purpose. "Nothing matched" is a fact
+    about the catalogue and is recorded as unmet demand; "could not
+    search" is a fact about this service, and must be neither recorded
+    nor reported to the shopper as Zatch not stocking something.
+    """
+
+
 @dataclass(frozen=True)
 class EmbeddingAudit:
     """The state of the vector collection, counted rather than sampled."""
@@ -1137,11 +1148,17 @@ async def search_products_semantically(query: str, limit: int = 5) -> list[dict]
             f"find_similar_products, which needs no model."
         )
 
+    # A FAILURE IS RAISED, NOT RETURNED AS "NOTHING FOUND". This used to
+    # return [], which is indistinguishable from a search that ran and
+    # matched nothing - so when the Azure embedding key started returning
+    # 401, every descriptive question was answered "Zatch doesn't have
+    # that" and recorded as unmet demand. The catalogue was never searched.
+    # tool_executor turns this into "search is temporarily unavailable".
     try:
         query_vector = await embed_query(query)
     except EmbeddingUnavailable as exc:
         logger.warning("semantic_search_unavailable", detail=str(exc)[:200])
-        return []
+        raise SemanticSearchUnavailable("the query could not be embedded") from exc
 
     pipeline = [
         {
@@ -1164,7 +1181,7 @@ async def search_products_semantically(query: str, limit: int = 5) -> list[dict]
             index=VECTOR_INDEX,
             detail=str(exc)[:200],
         )
-        return []
+        raise SemanticSearchUnavailable("the vector index could not be queried") from exc
 
     ranked_ids = [h["_id"] for h in hits]
     if not ranked_ids:

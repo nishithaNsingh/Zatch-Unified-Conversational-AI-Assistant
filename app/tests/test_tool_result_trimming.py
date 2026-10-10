@@ -300,7 +300,8 @@ class TestDealsTrimming:
         rows = _trim_deals([{"_id": "a" * 24, "name": "Leather jacket", "price": 1499,
                              "discountedPrice": 650, "category": "Men"}])
         assert rows[0]["saving"] == 849
-        assert rows[0]["discountPercent"] == 57  # 56.6 rounded, not "60% off"
+        # 56.6, rounded DOWN - never "60% off", and never up either.
+        assert rows[0]["discountPercent"] == 56
 
     def test_a_product_priced_at_zero_does_not_divide_by_zero(self):
         from app.agent.tool_executor import _trim_deals

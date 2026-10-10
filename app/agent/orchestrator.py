@@ -440,6 +440,197 @@ def _enforce_scope(
     return OUT_OF_SCOPE_REPLY
 
 
+# One-off corrections, sent with the tools withheld when a finished reply
+# fails a mechanical check. Never stored: the history keeps only the
+# corrected answer, so the next turn is not built on a nag.
+# "MY", NOT "YOUR" - the measured failure. Nemotron read "मेरे कार्ट में क्या
+# है?" (what is in MY cart) as a question about itself and introduced
+# itself, twice in a row. The correction says whose account it is.
+ANSWER_FROM_LOOKUP = (
+    "My previous message is about my own Zatch account, not about you. "
+    "Answer it using what the lookups above returned, and do not describe yourself."
+)
+ABOUT_THE_ASSISTANT = (
+    "Answer my previous message as the Zatch shopping assistant. Do not name "
+    "the AI model or the company behind it."
+)
+NO_SOCIAL_PROOF = (
+    "Answer my previous message again. Nothing returned says other shoppers "
+    "bought, paired or chose these items - do not say or imply that. Say they "
+    "go well with it."
+)
+
+
+def _language_instruction(script: str) -> str:
+    return (
+        f"Reply to my previous message in {script}, the way I wrote it. Keep "
+        f"product names, prices and order digits exactly as the lookup "
+        f"returned them."
+    )
+
+
+def _clean(reply: str, turn: list) -> str:
+    """What every reply goes through before it is judged or sent: no
+    markdown bold, and no line about the model itself or read back from
+    a tool's note. See grounding.drop_self_talk."""
+    return grounding.drop_self_talk(grounding.plain_text(reply), turn, OUT_OF_SCOPE_REPLY)
+
+
+async def _reask(
+    messages: list, user_id: str, instruction: str, turn: list | None = None
+) -> str | None:
+    """Asks for the last answer again, tools withheld, with one instruction.
+
+    THE INSTRUCTION IS NOT STORED. It travels on this call only, as a user
+    turn after the history, and the history afterwards holds the new
+    answer in place of the old one - nothing else. Storing it would make
+    every later turn re-read a correction about an answer the user never
+    saw.
+
+    Returns the new text, or None when the call fails or comes back empty,
+    in which case the history is left exactly as it was.
+
+    NOT STREAMED, like _answer_from_findings: the `done` event carries the
+    corrected reply, and it is what the client renders.
+    """
+    previous = messages.pop() if messages and messages[-1].get("role") == "assistant" else None
+    call = messages + [{"role": "user", "content": f"[{instruction}]"}]
+    try:
+        completion = await _complete_with_failover(call, user_id, tool_choice="none")
+    except (LLMRateLimited, LLMUnavailable, LLMBadRequest):
+        completion = None
+
+    text = _clean(completion.content if completion else "", turn or [])
+    if not text:
+        if previous is not None:
+            messages.append(previous)
+        return None
+    messages.append({"role": "assistant", "content": text})
+    return text
+
+
+def _set_last_reply(messages: list, text: str) -> None:
+    if messages and messages[-1].get("role") == "assistant":
+        messages[-1]["content"] = text
+
+
+async def _check_reply(
+    reply: str,
+    messages: list,
+    user_id: str,
+    *,
+    user_message: str,
+    turn_start: int,
+    tools_ran: bool,
+    tools_found: bool,
+) -> str:
+    """Every mechanical check a finished reply passes before it is sent.
+
+    IN ONE PLACE, because two paths produce a final reply - the normal one
+    and the synthesis turn after the round cap - and Nemotron reaches the
+    second on every comparison. A check wired into one path only is a
+    check that half the answers skip.
+
+    EACH CORRECTION IS ONE RE-ASK, NEVER A LOOP. A check that fails twice
+    keeps the better of the two outcomes rather than spending a third call:
+    the point is to catch a fumble, not to argue with the model.
+    """
+    if reply in FALLBACKS:
+        return reply
+
+    turn = messages[turn_start:]
+    cleaned = _clean(reply, turn)
+    if cleaned.split() != grounding.plain_text(reply).split():
+        logger.warning(
+            "reply_self_talk_removed", user_id=user_id, removed_from=reply[:300]
+        )
+    reply = cleaned
+    _set_last_reply(messages, reply)
+
+    # NOTHING LEFT once the self-talk is gone: the whole reply was about
+    # the model. Asked once more, as the assistant this is meant to be.
+    if not reply:
+        retry = await _reask(
+            messages, user_id,
+            ANSWER_FROM_LOOKUP if tools_found else ABOUT_THE_ASSISTANT, turn,
+        )
+        if retry is None:
+            _set_last_reply(messages, FALLBACK_GENERIC)
+            return FALLBACK_GENERIC
+        reply = retry
+
+    # A REFUSAL THAT CONTRADICTS ITS OWN LOOKUP IS WRONG, and it is wrong
+    # mechanically rather than as a matter of judgement: a tool came back
+    # with a product, so the question was about the catalogue. See
+    # _answer_from_findings for the measured case this closes.
+    if says_out_of_scope(reply):
+        if not tools_found:
+            return reply
+        logger.warning(
+            "refusal_after_successful_lookup",
+            user_id=user_id,
+            consequence="asking again from what the lookup returned",
+        )
+        reply, _ = await _answer_from_findings(messages, user_id)
+        if reply in FALLBACKS:
+            return reply
+        reply = _clean(reply, turn) or FALLBACK_GENERIC
+        _set_last_reply(messages, reply)
+        if reply == FALLBACK_GENERIC:
+            return reply
+
+    # A LOOKUP FOUND DATA AND THE ANSWER IGNORES IT. Measured: get_cart
+    # returned three items and the reply was "my name is Nemotron". Not
+    # off-topic in the sense _enforce_scope means - a tool ran - so it
+    # passed every check until this one.
+    if tools_found:
+        reason = grounding.unrelated_to_findings(reply, turn)
+        if reason:
+            logger.error(
+                "reply_unrelated_to_lookup",
+                user_id=user_id,
+                reason=reason,
+                suppressed=reply[:300],
+                consequence="asking again from what the lookup returned",
+            )
+            retry = await _reask(messages, user_id, ANSWER_FROM_LOOKUP, turn)
+            if retry is None or grounding.unrelated_to_findings(retry, turn):
+                logger.error("reply_unrelated_to_lookup_twice", user_id=user_id)
+                _set_last_reply(messages, FALLBACK_GENERIC)
+                return FALLBACK_GENERIC
+            reply = retry
+
+    claim = grounding.unsupported_social_proof(reply, turn)
+    if claim:
+        logger.warning("unsupported_social_proof", user_id=user_id, claim=claim)
+        retry = await _reask(messages, user_id, NO_SOCIAL_PROOF, turn)
+        if retry is not None and not grounding.unsupported_social_proof(retry, turn):
+            reply = retry
+        else:
+            reply = grounding.drop_social_proof(retry or reply)
+            _set_last_reply(messages, reply)
+
+    script = grounding.script_mismatch(user_message, reply)
+    if script:
+        logger.warning("reply_in_wrong_script", user_id=user_id, expected=script)
+        retry = await _reask(messages, user_id, _language_instruction(script), turn)
+        if retry is not None and not grounding.script_mismatch(user_message, retry):
+            reply = retry
+        else:
+            # Still the wrong script, or no answer at all. Keep the first:
+            # it already cleared the checks above, which a retry has not.
+            logger.warning(
+                "reply_in_wrong_script_twice", user_id=user_id,
+                retry_empty=retry is None,
+            )
+            _set_last_reply(messages, reply)
+
+    # THE ONLY PATH AN OFF-TOPIC ANSWER CAN TAKE. A reply that reaches the
+    # user without a single lookup either needed no data (a greeting, a
+    # clarifying question) or was written from the model's own knowledge.
+    return _enforce_scope(reply, tools_ran, user_id, messages)
+
+
 def _reply_with(messages: list, text: str) -> tuple[str, list]:
     """Ends the turn with a plain-language message, keeping it in the
     history so the next turn has accurate context about what happened."""
@@ -797,6 +988,9 @@ async def run_conversation(
     """
     messages = history if history is not None else [{"role": "system", "content": await build_system_prompt()}]
     messages.append({"role": "user", "content": user_message})
+    # Where this turn begins in the history. The reply checks judge an
+    # answer against THIS turn's lookups, not the whole conversation's.
+    turn_start = len(messages) - 1
 
     on_text = (
         (lambda text: _emit(on_event, type="token", text=text))
@@ -924,28 +1118,10 @@ async def run_conversation(
                 continue
 
             messages.append({"role": "assistant", "content": completion.content})
-
-            # A REFUSAL THAT CONTRADICTS ITS OWN LOOKUP IS WRONG, and it
-            # is wrong mechanically rather than as a matter of judgement:
-            # a tool came back with a product, so the question was about
-            # the catalogue. See _answer_from_findings for the measured
-            # case this closes.
-            if says_out_of_scope(completion.content) and tools_found:
-                logger.warning(
-                    "refusal_after_successful_lookup",
-                    user_id=user_id,
-                    consequence="asking again from what the lookup returned",
-                )
-                reply, messages = await _answer_from_findings(messages, user_id)
-                await _deliver(reply, messages)
-                return reply, messages
-
-            # THE ONLY PATH AN OFF-TOPIC ANSWER CAN TAKE. A reply that
-            # reaches the user without a single lookup either needed no
-            # data (a greeting, a clarifying question) or was written
-            # from the model's own knowledge.
-            reply = _enforce_scope(
-                completion.content, tools_ran, user_id, messages
+            reply = await _check_reply(
+                completion.content, messages, user_id,
+                user_message=user_message, turn_start=turn_start,
+                tools_ran=tools_ran, tools_found=tools_found,
             )
             await _deliver(reply, messages)
             return reply, messages
@@ -1056,9 +1232,13 @@ async def run_conversation(
 
     logger.warning("max_tool_iterations_exceeded", user_id=user_id)
     reply, messages = await _synthesize_final_answer(messages, user_id, on_text=on_text)
-    # Guarded on the same terms. Three rounds that produced no tool call
-    # at all is a degenerate turn, and the reply is then exactly as
-    # unsourced as one from the path above.
-    reply = _enforce_scope(reply, tools_ran, user_id, messages)
+    # Guarded on the same terms as the path above. Nemotron reaches this
+    # turn on every comparison and most complete-the-look questions, so a
+    # check that only ran on the other path would skip them.
+    reply = await _check_reply(
+        reply, messages, user_id,
+        user_message=user_message, turn_start=turn_start,
+        tools_ran=tools_ran, tools_found=tools_found,
+    )
     await _deliver(reply, messages)
     return reply, messages

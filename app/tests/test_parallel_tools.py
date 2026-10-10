@@ -52,7 +52,10 @@ def calls(*specs) -> Completion:
     )
 
 
-def answer(text="done") -> Completion:
+# A sentence a real answer could be, not a bare "done": the reply checks
+# (orchestrator._check_reply) re-ask when an answer ignores a lookup that
+# found data, and these tests are about scheduling, not about that.
+def answer(text="Here are the products and orders I found.") -> Completion:
     return Completion(content=text, tool_calls=[], provider="scripted",
                       model="m", prompt_tokens=10)
 
@@ -122,7 +125,7 @@ class TestTheyOverlap:
         reply, _ = await orchestrator.run_conversation("u1", "q", history=list(SYSTEM))
         elapsed = time.perf_counter() - started
 
-        assert reply == "done"
+        assert reply == answer().content
         assert elapsed < 0.30, (
             f"three 0.15s lookups took {elapsed:.2f}s - that is sequential"
         )
