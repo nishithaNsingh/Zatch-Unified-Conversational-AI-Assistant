@@ -864,6 +864,10 @@ DEVANAGARI_DOMAIN = (
     "खरीद", "डील", "हाँ", "हां", "नहीं",
 )
 
+# The same stems, minus the bare yes/no: a Devanagari message is only a
+# shopping question if it names a shopping thing.
+DEVANAGARI_SHOPPING = tuple(s for s in DEVANAGARI_DOMAIN if s not in ("हाँ", "हां", "नहीं"))
+
 # The English vocabulary, minus words any polite non-answer contains:
 # "I'm an AI assistant here to help" is not about a cart. Plus the bare
 # yes/no a terse correct answer may consist of, and the words a reply
@@ -941,6 +945,101 @@ def unrelated_to_findings(reply: str, turn_messages: list) -> str | None:
         "a lookup returned data, and the reply uses none of it - no product, "
         "number, price or Zatch word from the result"
     )
+
+
+# ── Should a refusal get a second look? ──────────────────────────────
+#
+# Measured on Nemotron, on the FIRST call, before any lookup: "Which is
+# better, the pattu saree or the Fancy saree?" refused 6 of 6, and "mera
+# order kahan hai?" 1 of 6. The trigger is the shape of the question -
+# "which is X, A or B?" reads as general knowledge - not the products:
+# "Compare the pattu saree and the Fancy saree" refused 0 of 5.
+#
+# A prompt rewording halves it and no more. So a refusal that came with no
+# lookup, for a message that reads like shopping, is asked once again with
+# the tools available. This does not decide anything - the model still
+# refuses if it is genuinely off-topic, at the cost of one call - so the
+# vocabulary may be generous where a guard would have to be strict.
+
+SHOPPING_WORDS = frozenset({
+    # Orders and delivery
+    "order", "ordered", "delivery", "deliver", "delivered", "shipping",
+    "shipped", "track", "tracking", "courier", "parcel", "package", "refund",
+    "cancel", "cancellation", "invoice",
+    # Buying
+    "cart", "basket", "product", "item", "price", "cost", "cheaper",
+    "cheapest", "expensive", "offer", "deal", "discount", "sale", "coupon",
+    "bargain", "negotiate", "compare", "comparison", "buy", "purchase",
+    "stock", "seller", "review", "rating", "wishlist", "zatch",
+    # Hinglish - Hindi typed in English letters
+    "kharid", "kharidna", "kharida", "daam", "kimat", "keemat", "saman",
+    "samaan", "wapas", "wapsi", "mangwaya", "bhejo", "dikhao",
+})
+
+
+def _singular(word: str) -> str:
+    """Good enough to match "sarees" to "saree" and "deals" to "deal" -
+    not English morphology, and it does not need to be."""
+    for suffix in ("es", "s"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            stem = word[: -len(suffix)]
+            if suffix == "es" and not stem.endswith(("ss", "sh", "ch", "x")):
+                continue
+            return stem
+    return word
+
+
+def catalogue_words(categories: dict | None) -> set:
+    """Words naming kinds of product, from the live category vocabulary -
+    "formal-shirts" gives "formal" and "shirt". It is what makes "which is
+    better, the pattu saree or the Fancy saree" read as shopping: neither
+    saree name is in any fixed list, but the kind is in the catalogue."""
+    words: set = set()
+    for value in (categories or {}).get("categories", []) + (categories or {}).get("subCategories", []):
+        for word in _NAME_TOKEN.findall(str(value).lower()):
+            if len(word) >= 3 and word not in _NAME_FILLER:
+                words.add(_singular(word))
+    return words
+
+
+def looks_like_shopping(message: str, catalogue: set | None = None) -> bool:
+    """Whether a message reads like a question about shopping on Zatch."""
+    text = message or ""
+    if any(stem in text for stem in DEVANAGARI_SHOPPING):
+        return True
+    words = {_singular(w) for w in _words(text)}
+    return bool(words & {_singular(w) for w in SHOPPING_WORDS}) or bool(
+        words & (catalogue or set())
+    )
+
+
+# ── A number nobody looked up ─────────────────────────────────────────
+#
+# Measured on Nemotron: "Any offers right now?" answered "I found 12
+# products with the biggest current reductions" - with no tool called. The
+# reply names Zatch things, so the scope checks pass it; the number is
+# invented all the same. A reply that ran no lookup this turn and states a
+# figure nothing in the conversation supplied has answered from memory.
+
+def unsourced_figures(reply: str, messages: list) -> list[str]:
+    """Numbers in the reply that no tool result and no user message in
+    this conversation contains. Empty means every figure has a source."""
+    evidence_numbers: set = set()
+    _, numbers = _turn_evidence(messages)
+    evidence_numbers |= numbers
+    for message in messages or []:
+        if message.get("role") == "user":
+            evidence_numbers.update(
+                float(run) for run in re.findall(r"\d+", message.get("content") or "")
+            )
+    # A list's own numbering ("1. orders") claims nothing.
+    text = re.sub(r"(?m)^\s*\d+[.)]\s", "", reply or "")
+    out = []
+    for raw in _NUMBER.findall(text):
+        value = _amount(raw)
+        if value is not None and value not in evidence_numbers:
+            out.append(raw)
+    return out
 
 
 # ── Did the reply come back in the shopper's script? ─────────────────

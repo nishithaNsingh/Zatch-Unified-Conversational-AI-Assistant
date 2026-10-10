@@ -195,8 +195,12 @@ class TestInProgressIsComputedNotInferred:
         async def count(user_id):
             return 2
 
+        async def in_progress(user_id):
+            return 1
+
         monkeypatch.setitem(tool_executor.TOOL_REGISTRY, "get_order_history", (history, True))
         monkeypatch.setattr(tool_executor.orders_repo, "count_orders", count)
+        monkeypatch.setattr(tool_executor.orders_repo, "count_in_progress", in_progress)
         result = json.loads(await execute_tool("get_order_history", {}, "u1"))
         assert result["inProgressShown"] == 1
 

@@ -303,7 +303,8 @@ def _trim_product_detail(detail: dict | None) -> dict | None:
     }
 
 
-DELIVERED_OR_DONE = {"delivered", "cancelled", "returned", "refunded"}
+# One definition, owned by the repo that queries on it.
+DELIVERED_OR_DONE = orders_repo.COMPLETED_STATUSES
 
 
 def _trim_order_history(orders: list) -> list:
@@ -331,6 +332,16 @@ def _trim_order_history(orders: list) -> list:
         row = {
             "orderId": order.get("orderId"),
             "status": order.get("status"),
+            # THE WORDS TO USE, not left to the model. The ORDERS rule once
+            # gave "out for delivery" as its example of plain words, and
+            # Nemotron reported two PENDING orders as "out for delivery" in
+            # 5 of 5 live replies - the example, not the data.
+            "statusText": (order.get("status") or "").replace("_", " ") or None,
+            # COUNTED HERE for the same reason. Asked for "the last 4
+            # digits", Nemotron wrote "8479", "74721" and "7792" for ids
+            # ending 7952, 1940 and 6819 - and a reply naming only wrong
+            # digits draws no button, because no real order ends that way.
+            "last4": str(order.get("orderId") or "")[-4:] or None,
             "items": [
                 {"name": i.get("name"), "qty": i.get("qty")}
                 for i in (order.get("items") or [])[:4]
@@ -785,21 +796,39 @@ _TRIMMERS = {
 # Bits - is one line.
 async def _summarise_orders(trimmed: list, user_id: str) -> dict:
     total = await orders_repo.count_orders(user_id)
+    in_progress_total = await orders_repo.count_in_progress(user_id)
     in_progress = sum(1 for row in trimmed if isinstance(row, dict) and row.get("inProgress"))
+
+    # The note is a sentence the model can repeat, because the sentence is
+    # what it actually uses. It always carries the TOTAL and the number IN
+    # PROGRESS - over all orders, not over the window - so "you have no
+    # orders in progress" can only be said when it is true.
+    if total <= len(trimmed):
+        note = f"These are all {total} of the user's orders; {in_progress_total} in progress."
+    elif in_progress_total > in_progress:
+        note = (
+            f"The user has {total} orders in total, {in_progress_total} in progress. "
+            f"Showing {in_progress} of the in-progress ones, newest first."
+        )
+    else:
+        note = (
+            f"The user has {total} orders in total, {in_progress_total} in progress. "
+            f"Showing every in-progress order first, then the most recent completed ones."
+        )
+
     return {
         "orders": trimmed,
         # Named so the difference is unmissable: the model has to work to
         # confuse "showing" with "totalOrders".
         "showing": len(trimmed),
         "totalOrders": total,
-        # The count the ORDERS rule branches on, so "none / one / two or
-        # more in progress" is read rather than inferred from statuses.
+        # The count the ORDERS rule branches on, over ALL the user's
+        # orders. The window lists in-progress orders first (see
+        # orders_repo.get_order_history), so none can hide behind newer
+        # completed ones.
+        "inProgressTotal": in_progress_total,
         "inProgressShown": in_progress,
-        "note": (
-            f"Showing the {len(trimmed)} most recent of {total} orders."
-            if total > len(trimmed)
-            else None
-        ),
+        "note": note,
     }
 
 

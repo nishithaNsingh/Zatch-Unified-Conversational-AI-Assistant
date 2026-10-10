@@ -26,14 +26,25 @@ honestly and no longer recorded as unmet demand; discounts round down.
 
 **Implemented: 11 of 35** (9 done, 1 still unreliable on the current model, 1 partial).
 
-**Open issues on NVIDIA, not yet fixed** (measured 10 October, after the fixes):
+**Second round of fixes, same day** (`app/tests/test_lookup_before_refusing.py`),
+each measured live through the full pipeline on Nemotron:
+
+| Problem | Cause found | Fix | Live after |
+|---|---|---|---|
+| In-scope questions refused as off-topic, before any lookup | The "which is X, A or B?" shape reads to Nemotron as general knowledge: "Which is better, the pattu saree or the Fancy saree?" refused **6 of 6** on the first call, while "Compare the pattu saree and the Fancy saree" refused 0 of 5 | SCOPE now says to refuse only what clearly has nothing to do with shopping, and names comparisons and Hinglish order questions as in scope. A refusal with no lookup, for a message that reads like shopping (orders, cart, offers, or a kind of product from the live catalogue), is asked once more with the tools - without spending a tool round | Saree comparison answered **10 of 11** (2 rescued by the second look); "mera order kahan hai?" answered **16 of 17**, never refused. Off-topic (France, Python code, weather) refused **15 of 15**, never asked again |
+| "Any offers?" answered with no lookup and an invented "12 products" | Model variance | A reply written with no lookup that states a figure no tool or user supplied is asked again with the tools | Deals tool called **5 of 5**; percentages read 99%, not 100% |
+| "Where is my order?" only saw the 5 newest orders | Newest-first let completed orders push open ones out of the window | `get_order_history` lists in-progress orders first, then the most recent completed; the summary counts every in-progress order and says the total | The buyer with 9 open orders, none among their newest 5, is never again told nothing is in progress (0 of 9). Open orders listed in 6 of 9 replies, one open order answered directly in 2, 1 empty-synthesis apology; the count is stated in 3 of 9 ("22 orders in total, 9 in progress") |
+| Two pending orders reported as "out for delivery" in 5 of 5 replies | The ORDERS rule's example of "plain words" was "out for delivery" | Each order carries `statusText` and `last4`, and the rule says to use them as given | The two pending orders read "pending" in every reply since; "ending 6819 / 8262" correct; buttons on 9 of 11 order replies (the other 2 answered one order) |
+| Two order answers ended in an apology | Synthesis came back empty twice in a row on an intermittent provider fault (the same history answered 3 of 3 when rebuilt) | A third synthesis attempt sends the lookups as plain text | Not reproducible on demand, so not verified live |
+
+**Still open on NVIDIA:**
 
 | Issue | Measured | Likely fix |
 |---|---|---|
-| In-scope questions refused as off-topic, on the first call, before any lookup | "Which is better, the pattu saree or the Fancy saree?" refused 2 of the 3 times it reached the model; "mera order kahan hai?" refused 2 of 5 | Ask once more, tools allowed, when a refusal came with no lookup — about one extra second on genuinely off-topic questions |
-| Hinglish answered in English | 1 of 3 Hinglish answers that were not refused | Not checkable mechanically (same script); needs a model that follows the LANGUAGE rule |
-| "Any offers?" answered with no lookup and an invented count ("12 products") | 1 of 3 | Re-ask when a reply states a number and no tool ran this turn |
-| "Where is my order?" only sees the 5 newest orders | A buyer with 9 in-progress orders, none in the newest 5, was told none are in progress | Have `get_order_history` put in-progress orders first, or count them in the summary |
+| Hinglish answered in English | Most "mera order kahan hai?" answers are now correct but in English | Not checkable mechanically (same script); needs a model that follows the LANGUAGE rule |
+| Occasional invented detail or mangled id | 1 of 11 order replies: "awaiting payment" and an id with doubled digits | Model quality; a stronger model or stricter checks on order replies |
+| Format rule ignored now and then | One order list came back as a markdown table | Convert tables to lines mechanically, as bold already is |
+| Latency outliers | Most answers 2–12 s; outliers 24–49 s | Provider-side |
 
 ---
 
@@ -56,7 +67,7 @@ honestly and no longer recorded as unmet demand; discounts round down.
 | # | Enhancement | Why first |
 |---|---|---|
 | 1 | ~~**Faster replies**~~ ✅ | Done: reasoning effort set to "low", 12.9 s → 6.7 s on an order lookup (Azure). On NVIDIA single lookups take 3.6–6.5 s. |
-| 2 | **Hindi / Hinglish** ⚠️ | Built and passed on Azure. On NVIDIA, after the 10 Oct fixes, Devanagari gives a correct Hindi answer 3 times in 5 (one English, one apology) and never the "my name is Nemotron" reply. Hinglish is still unreliable — see open issues. |
+| 2 | **Hindi / Hinglish** ⚠️ | Built and passed on Azure. On NVIDIA, after the 10 Oct fixes, Devanagari gives a correct Hindi answer 3 times in 5 (one English, one apology) and never the "my name is Nemotron" reply. Hinglish questions are no longer refused (16 of 17 answered after the second round of fixes) but are mostly answered in English — see open issues. |
 | 3 | **Hand-off to a human agent** ⛔ | An escape route whenever the bot can't help. Needs a support team and channel. |
 | 4 | **Store policies and FAQ** ⛔ | Return, shipping, COD and bargaining rules answered from one approved source. Needs approved policy text. |
 | 5 | **Tap-to-open cards in the app** ⛔ | Turns every product card into a path to a sale. Server side done; app team. |
@@ -102,7 +113,7 @@ honestly and no longer recorded as unmet demand; discounts round down.
 | **Hindi / Hinglish / regional languages** | Most Indian shoppers | Small–Medium — the model handles Hindi; needs testing | ⚠️ Built (`fabda16`). On NVIDIA it failed 0/2 for Devanagari. Fixed 10 Oct: a reply in the wrong script is asked again in the shopper's script; a reply that ignores the lookup (the "my name is Nemotron" case) is asked again, then replaced with an apology; self-disclosure lines are removed. Live after the fixes: 3 of 5 correct Hindi, 1 English with correct data, 1 apology. Hinglish still unreliable (refused 2 of 5, English 1 of 3). Hinglish off-topic refusal still works |
 | **Voice input** | Common on mobile in India | Medium (app side) | ⛔ Blocked — app side |
 | **👍 / 👎 on every reply** | The only real measure of answer quality | Small | ✅ Done — `POST /chat/feedback`, `scripts/read_feedback.py` (`94a5f8c`). No model dependency; tests pass, script reads production ratings |
-| **Tap-to-choose order buttons** instead of typing "last 4 digits" | Removes the confusion seen in manager testing | Small | ✅ Done (`6d19596`). Failed 0 of 4 on NVIDIA because the model prints full order ids. Fixed 10 Oct: the matcher reads full, masked ("ORD****6819") and short ids, and each order carries a computed `inProgress` flag. Live: a three-order reply drew 3 buttons, and tapping one opened that order |
+| **Tap-to-choose order buttons** instead of typing "last 4 digits" | Removes the confusion seen in manager testing | Small | ✅ Done (`6d19596`). Failed 0 of 4 on NVIDIA because the model prints full order ids. Fixed 10 Oct: the matcher reads full, masked ("ORD****6819") and short ids, and each order carries a computed `inProgress` flag. Live: a three-order reply drew 3 buttons, and tapping one opened that order. Second round: in-progress orders are listed first, and each order carries `statusText` and `last4` — buttons on 9 of 11 live order lists |
 | **Remember preferences across chats** — size, budget, style | Personal feel | Medium | ⬜ Not started — within one conversation only |
 
 ---

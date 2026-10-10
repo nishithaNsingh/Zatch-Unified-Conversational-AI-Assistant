@@ -43,6 +43,11 @@ COLLECTION = "orders"
 # PDF §3.7 — which order statuses still allow cancellation.
 CANCELLABLE_STATUSES = {"pending", "confirmed"}
 
+# An order in any other status is still in progress. The one definition,
+# shared with tool_executor's inProgress flag so the window, the count and
+# the flag cannot disagree about what "in progress" means.
+COMPLETED_STATUSES = frozenset({"delivered", "cancelled", "returned", "refunded"})
+
 
 async def _find_one_scoped(user_id: str, extra_query: dict) -> dict | None:
     """Internal helper - EVERY order lookup goes through this, so the
@@ -107,22 +112,55 @@ async def count_orders(user_id: str) -> int:
     )
 
 
+async def count_in_progress(user_id: str) -> int:
+    """How many of this buyer's orders are still in progress - the number
+    the ORDERS rule branches on, counted over ALL their orders rather than
+    over whichever few the history window happens to show."""
+    buyer_object_id = to_object_id(user_id)
+    if buyer_object_id is None:
+        return 0
+    return await get_database()[COLLECTION].count_documents(
+        {"buyerId": buyer_object_id, "status": {"$nin": sorted(COMPLETED_STATUSES)}}
+    )
+
+
 async def get_order_history(user_id: str, limit: int = 5) -> list[dict]:
-    """PDF §3.3 — most recent orders first."""
+    """PDF §3.3 — the buyer's orders, IN-PROGRESS ONES FIRST.
+
+    WHY NOT SIMPLY NEWEST FIRST. "Where is my order?" is a question about
+    an order that has not arrived. Newest-first let completed orders push
+    the open ones out of the window: measured, a buyer with 9 orders in
+    progress - none among their 5 newest - was told nothing was in
+    progress. So the window is filled with open orders first (newest of
+    those first), and only the room left over goes to the most recent
+    completed ones, which the ORDERS rule still needs when nothing is open.
+    """
     buyer_object_id = to_object_id(user_id)
     if buyer_object_id is None:
         return []  # graceful empty list, not a crash
 
     db = get_database()
     projection = get_projection(COLLECTION)
-    cursor = (
+    done = sorted(COMPLETED_STATUSES)
+
+    open_docs = await (
         db[COLLECTION]
-        .find({"buyerId": buyer_object_id}, projection)
-        .sort("createdAt", -1)  # newest first
+        .find({"buyerId": buyer_object_id, "status": {"$nin": done}}, projection)
+        .sort("createdAt", -1)
         .limit(limit)
+        .to_list(length=limit)
     )
-    docs = await cursor.to_list(length=limit)
-    return sanitize_documents(COLLECTION, docs)
+    room = limit - len(open_docs)
+    closed_docs = []
+    if room > 0:
+        closed_docs = await (
+            db[COLLECTION]
+            .find({"buyerId": buyer_object_id, "status": {"$in": done}}, projection)
+            .sort("createdAt", -1)
+            .limit(room)
+            .to_list(length=room)
+        )
+    return sanitize_documents(COLLECTION, open_docs + closed_docs)
 
 
 async def get_order_detail(user_id: str, order_id: str) -> dict | None:

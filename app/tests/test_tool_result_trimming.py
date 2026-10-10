@@ -172,11 +172,11 @@ class TestOrderCountIsNotTheWindowSize:
         total = await orders_repo.count_orders(user_id)
         result = json.loads(await execute_tool("get_order_history", {}, user_id))
 
-        if total > result["showing"]:
-            assert result["note"] is not None
-            assert str(total) in result["note"]
-        else:
-            assert result["note"] is None
+        # ALWAYS a sentence now, truncated or not: it also carries how many
+        # orders are in progress, which "where is my order" branches on.
+        assert result["note"] is not None
+        assert str(total) in result["note"]
+        assert str(result["inProgressTotal"]) in result["note"]
 
     async def test_an_unknown_buyer_counts_zero_rather_than_raising(self):
         from app.repos import orders_repo

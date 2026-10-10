@@ -125,6 +125,7 @@ class TestTheCollectorIsFilled:
             "get_order_history", (fake_history, True),
         )
         monkeypatch.setattr(tool_executor.orders_repo, "count_orders", fake_count)
+        monkeypatch.setattr(tool_executor.orders_repo, "count_in_progress", fake_count)
 
         batches: list = []
         await execute_tool("get_order_history", {}, "u1", collector=batches)
