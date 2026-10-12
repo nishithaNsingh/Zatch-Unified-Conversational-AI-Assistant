@@ -26,6 +26,11 @@ docs/zatch-database-schema.txt
 docs/requirements.pdf
 docs/staging-collections-and-fields.pdf
 
+# Built by scripts/build_features_pdf.py. Page 1 carries the demo access
+# code, so the built file must never be committed.
+Zatch-Features.pdf
+Zatch-Features.html
+
 # Local snapshot of the old 384-dim product embeddings, taken before
 # the re-embed migration. Derived data, ~1.2MB, and the model that made
 # it is unidentified so it cannot be regenerated - keep it, do not commit it.
