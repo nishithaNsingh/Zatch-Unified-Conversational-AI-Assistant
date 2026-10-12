@@ -164,13 +164,21 @@ async def get_order_history(user_id: str, limit: int = 5) -> list[dict]:
 
 
 async def get_order_detail(user_id: str, order_id: str) -> dict | None:
-    """PDF §3.4 — items, pricing breakdown, coarse delivery location."""
+    """PDF §3.4 — items, pricing breakdown, coarse delivery location.
+
+    THE STATUS TRAVELS WITH THE DETAILS. It used to be left out, as a
+    different lookup's business - and asked for the details of a PENDING
+    order, Nemotron wrote "The order is marked as delivered", filling the
+    gap from nothing. A details answer is read as the whole picture, so
+    it carries the one fact a shopper is most likely to repeat.
+    """
     doc = await _find_one_scoped(user_id, {"orderId": order_id})
     if doc is None:
         return None
     delivery = doc.get("deliveryAddress", {}) or {}
     return {
         "orderId": doc.get("orderId"),
+        "status": doc.get("status"),
         "items": doc.get("items", []),
         "pricing": doc.get("pricing"),
         "deliveryCity": delivery.get("city"),

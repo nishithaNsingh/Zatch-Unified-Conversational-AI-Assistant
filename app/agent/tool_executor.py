@@ -366,6 +366,20 @@ def _trim_order_history(orders: list) -> list:
     return out
 
 
+def _status_words(status) -> str | None:
+    return (status or "").replace("_", " ") or None
+
+
+def _with_status_text(result: dict | None) -> dict | None:
+    """Single-order lookups get the same `statusText` the order list
+    carries, so every answer about an order quotes its status from one
+    place, in the words the ORDERS rule asks for - never the model's own
+    reading of "out_for_delivery", and never a status it was not given."""
+    if not isinstance(result, dict) or not result.get("status"):
+        return result
+    return {**result, "statusText": _status_words(result.get("status"))}
+
+
 def _trim_bargain_list(bargains: list) -> list:
     """list_bargains - the raw documents carry buyerId, sellerId, the
     whole productSnapshot including its image URL, variant and quantity,
@@ -756,6 +770,9 @@ def _dedupe_by_name_price(products: list) -> list:
 
 _TRIMMERS = {
     "get_order_history": _trim_order_history,
+    "get_order_detail": _with_status_text,
+    "get_order_status": _with_status_text,
+    "check_cancellation_eligibility": _with_status_text,
     "search_products": _trim_product_list,
     "get_discounted_products": _trim_deals,
     "compare_products": _trim_comparison,

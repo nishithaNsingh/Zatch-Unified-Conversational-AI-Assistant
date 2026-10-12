@@ -1162,7 +1162,9 @@ def plain_text(reply: str) -> str:
 SELF_DISCLOSURE = re.compile(
     r"nemotron|nvidia|openai|chatgpt|\bgpt-?\d|\bllama\b|anthropic"
     r"|language model|system prompt"
-    r"|नेमोट्रॉन|एनवीडिया|ओपनएआई",
+    # Transliterations vary - "एनवीडिया", and measured live "एनवीआईडीआईए" -
+    # so NVIDIA is matched by its stem, Nemotron by its own.
+    r"|नेमोट्रॉन|नेमोट्रोन|एनवी[^\s]*|ओपनएआई",
     re.IGNORECASE,
 )
 

@@ -59,6 +59,7 @@ MECHANISM:
 
 import dataclasses
 import logging
+import re
 import sys
 
 import structlog
@@ -124,10 +125,36 @@ SAFE_KEYS = frozenset(
 )
 
 
-def _is_sensitive_key(key: str) -> bool:
+# A COUNT of tokens, by its name. The exact list above missed
+# "cached_tokens", added later beside prompt_tokens - and the prompt-cache
+# metric then read "***REDACTED***" on every LLM call, so the one number
+# proving the cache works was hidden in the very logs it was added to.
+# A name rule, so the next counter ("reasoning_tokens", "tokens_used")
+# does not repeat that.
+#
+# ONLY WITH A NUMBER BESIDE IT. A token itself is a string; a count is an
+# int. "access_token": 12345 would still be redacted by the name rule
+# below never matching it, and "cached_tokens": "abc" is redacted because
+# the value is not a number. Both conditions must hold.
+_TOKEN_COUNT_NAME = re.compile(
+    r"(?:^|_)tokens$|tokens$|tokens?_(?:count|used|total|left|remaining|cached|limit)$"
+)
+_SECRET_TOKEN_NAME = re.compile(r"access|refresh|auth|api|bearer|session|id_token|csrf|reset|verify|verification")
+
+
+def _is_token_count(key_lower: str, value) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and bool(_TOKEN_COUNT_NAME.search(key_lower))
+        and not _SECRET_TOKEN_NAME.search(key_lower)
+    )
+
+
+def _is_sensitive_key(key: str, value=None) -> bool:
     # Lowercase comparison so "Password", "PASSWORD", "userPassword" all match.
     key_lower = key.lower()
-    if key_lower in SAFE_KEYS:
+    if key_lower in SAFE_KEYS or _is_token_count(key_lower, value):
         return False
     return any(sensitive in key_lower for sensitive in SENSITIVE_KEYS)
 
@@ -143,7 +170,7 @@ def _redact_value(value, depth: int = 0):
         return {
             k: (
                 "***REDACTED***"
-                if _is_sensitive_key(k)
+                if _is_sensitive_key(k, v)
                 else _redact_value(v, depth + 1)
             )
             for k, v in value.items()
@@ -203,7 +230,7 @@ def redact_sensitive_data(logger, method_name, event_dict):
     """
     cleaned = {}
     for key, value in event_dict.items():
-        if _is_sensitive_key(key):
+        if _is_sensitive_key(key, value):
             cleaned[key] = "***REDACTED***"
         else:
             cleaned[key] = _redact_value(value)

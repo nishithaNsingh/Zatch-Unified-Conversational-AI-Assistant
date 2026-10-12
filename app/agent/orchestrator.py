@@ -56,7 +56,7 @@ import json
 
 import structlog
 
-from app.agent import grounding
+from app.agent import claims, grounding
 from app.agent.llm_client import (
     LLMBadRequest,
     LLMRateLimited,
@@ -293,9 +293,9 @@ ORDERS: for "my order" - or a refund, return or cancellation - with no specific 
 - no in-progress orders -> answer about the most recent one, in past tense
 - exactly one -> use it, do not ask
 - two or more -> list them (item, "ending" and the order's last4 field, its statusText exactly as given, and "late" if it is), then ask in plain words: "Which one? Tap it below or reply with the item name." The app draws a button for each order you list, so always include the last 4 digits on every line. Never shorthand like "last 4 OK".
-"In progress" is the inProgress field and the inProgressTotal count, never your own reading of a status. When not every order is shown, say how many they have in total.
+"In progress" is the inProgress field and the inProgressTotal count, never your own reading of a status. When not every order is shown, say how many they have in total. Give an order's status only as a lookup's statusText for that order; if no lookup returned its status, do not state one.
 
-READ-ONLY: you can look things up, and nothing else. Never offer to place an order or a bargain, add to cart, apply a coupon, cancel, change, track-and-notify, or watch anything - you cannot do any of it. Report what is true, and point to the app screen only when they asked to DO something. Do not end a reply by offering an action you cannot perform.
+READ-ONLY: you can look things up, and nothing else. Never offer to place an order or a bargain, add to cart, apply a coupon, cancel, change, track-and-notify, or watch anything - you cannot do any of it. Never say anything was or will be submitted, placed, sent, cancelled, added or applied, and never say they will be notified: nothing you do changes anything. When asked to do one of these, say you can't and how they can do it in the Zatch app. Report what is true, and point to the app screen only when they asked to DO something. Do not end a reply by offering an action you cannot perform.
 
 SEARCH: if the user NAMES a product, call search_products_by_name - never guess filters for it. Use search_products only when the user gives filters: category must be exactly one of {real_categories['categories']}. subCategory exactly one of {real_categories['subCategories']}. Case does not matter, but never use a value outside these lists.
 
@@ -662,6 +662,44 @@ async def _check_reply(
                 return FALLBACK_GENERIC
             reply = retry
 
+    # SAYING SOMETHING WAS DONE. The worst thing a read-only assistant can
+    # say, measured: "Your offer of ₹900… has been submitted… You'll be
+    # notified if it's accepted" - nothing was placed. Asked once more
+    # with the boundary spelled out; if it still claims, a fixed sentence
+    # goes out instead, because a shopper acting on a false "done" is worse
+    # than any apology. See claims.py for what counts as a claim.
+    action = claims.dishonest_about_action(reply, user_message, turn)
+    if action:
+        logger.error(
+            "false_action_claim", user_id=user_id, claim=action,
+            consequence="asking again with the read-only boundary spelled out",
+        )
+        retry = await _reask(messages, user_id, claims.READ_ONLY_INSTRUCTION, turn)
+        if retry is None or claims.dishonest_about_action(retry, user_message, turn):
+            honest = claims.read_only_reply(user_message)
+            logger.error(
+                "false_action_claim_twice", user_id=user_id,
+                consequence="sent the fixed read-only sentence",
+            )
+            _set_last_reply(messages, honest)
+            return honest
+        reply = retry
+
+    # A STATUS NO LOOKUP RETURNED FOR THAT ORDER. Measured: a pending
+    # order's details answered "The order is marked as delivered". Asked
+    # once more with the real statuses named; if it still invents one, the
+    # sentences carrying it are removed - a wrong status is worse than a
+    # missing sentence.
+    wrong = claims.unsupported_statuses(reply, messages)
+    if wrong:
+        logger.error("unsupported_order_status", user_id=user_id, statuses=wrong)
+        retry = await _reask(messages, user_id, claims.status_instruction(messages), turn)
+        if retry is not None and not claims.unsupported_statuses(retry, messages):
+            reply = retry
+        else:
+            reply = claims.drop_unsupported_statuses(retry or reply, messages) or FALLBACK_GENERIC
+            _set_last_reply(messages, reply)
+
     claim = grounding.unsupported_social_proof(reply, turn)
     if claim:
         logger.warning("unsupported_social_proof", user_id=user_id, claim=claim)
@@ -686,6 +724,21 @@ async def _check_reply(
                 retry_empty=retry is None,
             )
             _set_last_reply(messages, reply)
+
+    # THE LAST GATE, AFTER EVERY OTHER CORRECTION. Measured live: the
+    # action check passed a first answer, then the status or language
+    # re-ask wrote "RL Black shirt कार्ट में जोड़ दिया गया (It's been added to
+    # your cart)" - a claim no check looked at, because each check ran once,
+    # early. A claim here is not re-asked a third time; it is replaced.
+    final_claim = claims.dishonest_about_action(reply, user_message, turn)
+    if final_claim:
+        logger.error(
+            "false_action_claim_after_corrections", user_id=user_id, claim=final_claim,
+            consequence="sent the fixed read-only sentence",
+        )
+        honest = claims.read_only_reply(user_message)
+        _set_last_reply(messages, honest)
+        return honest
 
     # THE ONLY PATH AN OFF-TOPIC ANSWER CAN TAKE. A reply that reaches the
     # user without a single lookup either needed no data (a greeting, a
