@@ -168,7 +168,7 @@ def build_page(body: str, headings, access_code: str | None) -> str:
 
     cover = (
         f'<section class="cover"><h1>{html.escape(title)}</h1>'
-        f'<div class="sub">Every feature, tested live. Built {date.today():%d %B %Y}.</div>'
+        f'<div class="sub">The main features, each tested live. Built {date.today():%d %B %Y}.</div>'
         f'<p>Live demo: <a href="{DEMO_URL}">{DEMO_URL}</a></p>{access}</section>'
     )
 
